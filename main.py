@@ -19,7 +19,7 @@ except ImportError:
 try:
     from config.entorno import ENTORNOS
 except ImportError:
-    ENTORNOS = []
+    ENTORNOS = {}
     print("Advertencia: No se encontró ENTORNOS en config/entorno.py o config/entornos.py")
 
 def ejecutar_comando(comando, cwd=None, exit_on_error=True):
@@ -72,32 +72,37 @@ def instalar_paquetes_aur():
 def elegir_entorno():
     if not ENTORNOS:
         print("\n=== No hay entornos de escritorio configurados. ===")
-        return None
+        return None, []
+
+    # Detectamos si es un diccionario (nueva versión) o una lista (versión anterior)
+    entornos_dict = ENTORNOS if isinstance(ENTORNOS, dict) else {f"Opción {i+1}": [e] for i, e in enumerate(ENTORNOS)}
 
     print("\n=== Elige tu entorno de escritorio ===")
-    for i, entorno in enumerate(ENTORNOS):
-        # Muestra un nombre amigable si es posible
-        nombre = entorno.split()[0] if " " in entorno else entorno
-        print(f"[{i+1}] {nombre.capitalize()} ({entorno})")
-    print(f"[{len(ENTORNOS)+1}] Saltar instalación de entorno")
+    nombres_entornos = list(entornos_dict.keys())
+    for i, nombre in enumerate(nombres_entornos):
+        paquetes = len(entornos_dict[nombre])
+        print(f"[{i+1}] {nombre} ({paquetes} paquetes)")
+    print(f"[{len(nombres_entornos)+1}] Saltar instalación de entorno")
     
     while True:
         try:
             opcion = int(input("\nOpción: ")) - 1
-            if 0 <= opcion < len(ENTORNOS):
-                return ENTORNOS[opcion]
-            elif opcion == len(ENTORNOS):
-                return None
+            if 0 <= opcion < len(nombres_entornos):
+                nombre_elegido = nombres_entornos[opcion]
+                return nombre_elegido, entornos_dict[nombre_elegido]
+            elif opcion == len(nombres_entornos):
+                return None, []
             else:
                 print("Por favor, selecciona un número válido.")
         except ValueError:
             print("Entrada no válida. Introduce un número.")
 
 def instalar_entornos():
-    entorno = elegir_entorno()
-    if entorno:
-        print(f"\n=== Instalando entorno: {entorno} ===")
-        ejecutar_comando(f"sudo pacman -S --noconfirm {entorno}", exit_on_error=False)
+    nombre_entorno, paquetes_entorno = elegir_entorno()
+    if nombre_entorno and paquetes_entorno:
+        print(f"\n=== Instalando entorno: {nombre_entorno} ===")
+        paquetes_str = " ".join(paquetes_entorno)
+        ejecutar_comando(f"sudo pacman -S --noconfirm {paquetes_str}", exit_on_error=False)
     else:
         print("\nOmitiendo instalación de entorno de escritorio.")
 
