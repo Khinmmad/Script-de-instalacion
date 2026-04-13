@@ -103,6 +103,11 @@ def instalar_entornos():
         print(f"\n=== Instalando entorno: {nombre_entorno} ===")
         paquetes_str = " ".join(paquetes_entorno)
         ejecutar_comando(f"sudo pacman -S --noconfirm {paquetes_str}", exit_on_error=False)
+        
+        # Habilitar SDDM si se elige Hyprland o KDE Plasma
+        if nombre_entorno in ["Hyprland", "KDE Plasma"]:
+            print(f"\n=== Habilitando SDDM para {nombre_entorno} ===")
+            ejecutar_comando("sudo systemctl enable sddm", exit_on_error=False)
     else:
         print("\nOmitiendo instalación de entorno de escritorio.")
 

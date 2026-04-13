@@ -8,5 +8,6 @@ PAQUETES_OFICIALES = [
     "htop",
     "git",
     "nano",
-    "hyprlock"
+    "hyprlock",
+    "linux-headers"
 ]
