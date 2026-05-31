@@ -1,29 +1,65 @@
-# Aquí definimos los entornos de escritorio como un diccionario.
-# La clave (nombre del entorno) es lo que verá el usuario.
-# El valor es la lista de paquetes que se instalarán para ese entorno.
+import subprocess
 
-ENTORNOS = {
-    "KDE Plasma": [
-        "plasma",
-        "sddm",     # Gestor de inicio de sesión
-        "konsole",
-        "dolphin"
-    ],
-    "GNOME": [
-        "gnome",
-        "gdm",      # Gestor de inicio de sesión de GNOME
-        "gnome-tweaks",
-        "gnome-terminal"
-    ],
-    "Hyprland": [
-        "hyprland",
-        "sddm",     # Gestor de inicio de sesión (recomendado y funciona bien con wayland)
-        "kitty",    # Terminal muy usada en Hyprland
-        "wofi",     # Lanzador de aplicaciones por defecto en wayland
-        "waybar",   # Barra de estado
-        "dunst",    # Demonio de notificaciones
-        "hyprpaper", # Para fondos de pantalla en Hyprland
-        "polkit-kde-agent",  # necesario para permisos gráficos en wayland
-        "xdg-desktop-portal-hyprland"  # para screensharing y más
-    ]
+base = [
+    "xorg",
+    "xorg-server",
+    "xorg-xinit",
+    "mesa",
+    "networkmanager",
+    "bluez",
+    "bluez-utils",
+    "pipewire",
+    "pipewire-pulse",
+    "wireplumber",
+    "git",
+    "base-devel"
+]
+
+kde = [
+    "plasma",
+    "kde-applications",
+    "sddm"
+]
+
+gnome = [
+    "gnome",
+    "gdm"
+]
+
+hyprland = [
+    "hyprland",
+    "waybar",
+    "wofi",
+    "xdg-desktop-portal-hyprland"
+]
+
+qtile = [
+    "qtile",
+    "python",
+    "python-pywlroots"
+]
+
+display_managers = {
+    "kde": ["sddm"],
+    "gnome": ["gdm"],
+    "hyprland": ["sddm"], 
+    "qtile": ["lightdm"]
 }
+
+wayland = [
+    "wayland",
+    "wlroots"
+]
+
+x11 = [
+    "xorg",
+    "xorg-xinit"
+]
+
+
+
+def instalar_entorno(entorno):
+    paquetes = []
+    
+    paquetes.extend(base)
+    paquetes.extend(entorno)

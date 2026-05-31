@@ -1,13 +1,15 @@
-# aqui la lista es con paquetes oficiales
-
-PAQUETES_OFICIALES = [
-    "firefox",
-    "vlc",
-    "vim",
-    "fastfetch",
-    "htop",
+PAQUETES = [
     "git",
-    "nano",
-    "hyprlock",
-    "linux-headers"
+    "base-devel",
+    "firefox",
+    "fastfetch",
+    "rofi",
+    "awww"
+    "alacritty",
+    "thunar",
+    "neovim",
+    "htop",
+    "network-manager-applet",
+    "vim",
+    "kitty"
 ]
