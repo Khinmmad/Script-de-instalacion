@@ -21,29 +21,57 @@ deja un log de todo lo que se instaló.
 - 📝 **Log con marca de tiempo** en `~/.local/state/arch-postinstall/`.
 - 💾 **Perfiles guardables/cargables** para reproducir tu setup en otra máquina.
 
-## Instalación rápida (sin compilar) ⚡
+## Pasos para usarlo (sin compilar) ⚡
 
 El repo ya incluye un **binario precompilado estático** (no depende de Python
-ni de librerías del sistema). No necesitas Rust ni compilar nada:
+ni de librerías del sistema). No necesitas Rust ni compilar nada.
+
+**1. Clona el repositorio:**
 
 ```bash
 git clone https://github.com/Khinmmad/Script-de-instalacion
-cd Script-de-instalacion
-
-# Opción A: ejecutarlo directamente
-./dist/arch-postinstall-x86_64-linux
-
-# Opción B: instalarlo en tu PATH y luego llamarlo solo por su nombre
-./install.sh            # lo copia a ~/.local/bin
-arch-postinstall        # ¡listo!
 ```
 
-> `./install.sh --system` lo instala en `/usr/local/bin` (con sudo) para todos
-> los usuarios.
+**2. Entra a la carpeta:**
 
-También puedes descargar el binario de la sección
+```bash
+cd Script-de-instalacion
+```
+
+**3. Instálalo en tu PATH:**
+
+```bash
+./install.sh
+```
+
+> Esto copia el binario a `~/.local/bin`. Para instalarlo para todos los
+> usuarios en `/usr/local/bin`, usa `./install.sh --system` (pide sudo).
+
+**4. Ejecútalo escribiendo su nombre:**
+
+```bash
+arch-postinstall
+```
+
+Se abrirá el asistente: sigue los 4 pasos en pantalla (entorno → paquetes
+oficiales → paquetes AUR → revisión) y confirma para instalar.
+
+> No lo corras como `root`. El programa usa `sudo` cuando hace falta.
+
+### Alternativa: ejecutarlo sin instalar
+
+Si prefieres no copiarlo al PATH, ejecútalo directamente desde la carpeta:
+
+```bash
+./dist/arch-postinstall-x86_64-linux
+```
+
+### Alternativa: descargar de Releases
+
+También puedes bajar el binario desde la sección
 [Releases](https://github.com/Khinmmad/Script-de-instalacion/releases) (se
-publica automáticamente al subir un tag `vX.Y.Z`).
+publica automáticamente al subir un tag `vX.Y.Z`), darle permisos de ejecución
+con `chmod +x` y correrlo.
 
 ## Requisitos
 
