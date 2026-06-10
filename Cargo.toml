@@ -1,0 +1,25 @@
+[package]
+name = "arch-postinstall"
+version = "0.2.0"
+edition = "2021"
+description = "TUI interactiva para post-instalacion de Arch Linux: paquetes, AUR y entornos de escritorio."
+license = "MIT"
+repository = "https://github.com/Khinmmad/Script-de-instalacion"
+
+[[bin]]
+name = "arch-postinstall"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+anyhow = "1"
+dirs = "5"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

@@ -1,3 +1,7 @@
+# Rust
+/target/
+
+# Legacy Python (proyecto migrado a Rust)
 __pycache__/
 *.pyc
 .venv/
