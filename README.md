@@ -21,13 +21,38 @@ deja un log de todo lo que se instaló.
 - 📝 **Log con marca de tiempo** en `~/.local/state/arch-postinstall/`.
 - 💾 **Perfiles guardables/cargables** para reproducir tu setup en otra máquina.
 
+## Instalación rápida (sin compilar) ⚡
+
+El repo ya incluye un **binario precompilado estático** (no depende de Python
+ni de librerías del sistema). No necesitas Rust ni compilar nada:
+
+```bash
+git clone https://github.com/Khinmmad/Script-de-instalacion
+cd Script-de-instalacion
+
+# Opción A: ejecutarlo directamente
+./dist/arch-postinstall-x86_64-linux
+
+# Opción B: instalarlo en tu PATH y luego llamarlo solo por su nombre
+./install.sh            # lo copia a ~/.local/bin
+arch-postinstall        # ¡listo!
+```
+
+> `./install.sh --system` lo instala en `/usr/local/bin` (con sudo) para todos
+> los usuarios.
+
+También puedes descargar el binario de la sección
+[Releases](https://github.com/Khinmmad/Script-de-instalacion/releases) (se
+publica automáticamente al subir un tag `vX.Y.Z`).
+
 ## Requisitos
 
 - Arch Linux (o derivado con `pacman`).
 - Conexión a internet.
-- Toolchain de Rust para compilar (`rustup`/`cargo`).
+- **Para usar el binario precompilado:** nada más (es estático).
+- **Solo si quieres compilarlo tú:** toolchain de Rust (`rustup`/`cargo`).
 
-## Compilación
+## Compilación (opcional, solo si modificas el código)
 
 ```bash
 git clone https://github.com/Khinmmad/Script-de-instalacion

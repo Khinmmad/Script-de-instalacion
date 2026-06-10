@@ -1,0 +1,36 @@
+name: release
+
+# Compila el binario estatico y lo publica como asset de la Release
+# cada vez que subes un tag tipo v0.2.0, v1.0.0, etc.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar toolchain Rust + target musl
+        run: |
+          rustup update stable
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Compilar binario estatico
+        run: cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Renombrar artefacto
+        run: |
+          cp target/x86_64-unknown-linux-musl/release/arch-postinstall \
+             arch-postinstall-x86_64-linux
+
+      - name: Publicar Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: arch-postinstall-x86_64-linux
+          generate_release_notes: true
