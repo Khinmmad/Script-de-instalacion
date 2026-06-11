@@ -4,7 +4,7 @@
 //! otro paquete (oficial o del AUR) en vivo. Los nombres aqui estan revisados
 //! contra los repositorios actuales de Arch Linux.
 
-use crate::model::{DesktopEnvironment, Package, Source};
+use crate::model::{DesktopEnvironment, DriverBundle, Package, Source};
 
 /// Paquetes base comunes a cualquier entorno grafico (todos oficiales).
 pub const BASE_PACKAGES: &[&str] = &[
@@ -63,6 +63,61 @@ pub const DESKTOP_ENVIRONMENTS: &[DesktopEnvironment] = &[
     },
 ];
 
+/// Controladores (GPU y microcodigo de CPU) seleccionables.
+///
+/// Puedes marcar varios (por ejemplo Intel + NVIDIA en portatiles hibridos, o
+/// el microcodigo de tu CPU). Los paquetes son todos oficiales.
+pub const DRIVERS: &[DriverBundle] = &[
+    DriverBundle {
+        id: "nvidia",
+        label: "GPU NVIDIA (propietario)",
+        packages: &["nvidia", "nvidia-utils", "nvidia-settings"],
+        default_on: false,
+    },
+    DriverBundle {
+        id: "nvidia-open",
+        label: "GPU NVIDIA (open kernel, Turing+)",
+        packages: &["nvidia-open", "nvidia-utils", "nvidia-settings"],
+        default_on: false,
+    },
+    DriverBundle {
+        id: "amd",
+        label: "GPU AMD / Radeon (mesa + Vulkan)",
+        packages: &["mesa", "vulkan-radeon", "libva-mesa-driver"],
+        default_on: false,
+    },
+    DriverBundle {
+        id: "intel",
+        label: "GPU Intel (mesa + Vulkan)",
+        packages: &["mesa", "vulkan-intel", "intel-media-driver"],
+        default_on: false,
+    },
+    DriverBundle {
+        id: "nouveau",
+        label: "GPU NVIDIA libre (nouveau)",
+        packages: &["mesa", "xf86-video-nouveau"],
+        default_on: false,
+    },
+    DriverBundle {
+        id: "vm",
+        label: "Maquina virtual (invitado SPICE/QEMU)",
+        packages: &["spice-vdagent", "qemu-guest-agent"],
+        default_on: false,
+    },
+    DriverBundle {
+        id: "intel-ucode",
+        label: "Microcodigo CPU Intel",
+        packages: &["intel-ucode"],
+        default_on: false,
+    },
+    DriverBundle {
+        id: "amd-ucode",
+        label: "Microcodigo CPU AMD",
+        packages: &["amd-ucode"],
+        default_on: false,
+    },
+];
+
 /// Paquetes extra ofrecidos por defecto en la TUI (puedes anadir mas buscando).
 #[rustfmt::skip]
 pub const EXTRA_PACKAGES: &[Package] = &[
@@ -100,6 +155,15 @@ mod tests {
                 "paquete duplicado en catalogo: {}",
                 p.name
             );
+        }
+    }
+
+    #[test]
+    fn driver_ids_are_unique_and_have_packages() {
+        let mut seen = HashSet::new();
+        for d in DRIVERS {
+            assert!(seen.insert(d.id), "id de driver duplicado: {}", d.id);
+            assert!(!d.packages.is_empty(), "driver sin paquetes: {}", d.id);
         }
     }
 
