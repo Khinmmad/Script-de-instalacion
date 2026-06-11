@@ -88,3 +88,59 @@ impl Profile {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_plan() -> InstallPlan {
+        InstallPlan {
+            desktop_env_id: Some("hyprland".into()),
+            display_manager: Some("sddm".into()),
+            official: vec!["firefox".into(), "kitty".into()],
+            aur: vec!["spotify".into()],
+        }
+    }
+
+    #[test]
+    fn plan_roundtrip_through_profile() {
+        let plan = sample_plan();
+        let profile = Profile::from_plan("mi-setup", &plan);
+        let back = profile.into_plan();
+        assert_eq!(back.desktop_env_id, plan.desktop_env_id);
+        assert_eq!(back.display_manager, plan.display_manager);
+        assert_eq!(back.official, plan.official);
+        assert_eq!(back.aur, plan.aur);
+    }
+
+    #[test]
+    fn profile_roundtrip_through_toml() {
+        let profile = Profile::from_plan("mi-setup", &sample_plan());
+        let body = toml::to_string_pretty(&profile).unwrap();
+        let parsed: Profile = toml::from_str(&body).unwrap();
+        assert_eq!(parsed.name, "mi-setup");
+        assert_eq!(parsed.official_packages, profile.official_packages);
+        assert_eq!(parsed.aur_packages, profile.aur_packages);
+    }
+
+    #[test]
+    fn profile_with_missing_fields_uses_defaults() {
+        // Un perfil editado a mano puede omitir campos opcionales.
+        let parsed: Profile = toml::from_str("name = \"minimo\"").unwrap();
+        assert!(parsed.desktop_environment.is_none());
+        assert!(parsed.official_packages.is_empty());
+        assert!(parsed.into_plan().is_empty());
+    }
+
+    #[test]
+    fn empty_plan_is_empty() {
+        let plan = InstallPlan {
+            desktop_env_id: None,
+            display_manager: None,
+            official: vec![],
+            aur: vec![],
+        };
+        assert!(plan.is_empty());
+        assert!(!sample_plan().is_empty());
+    }
+}

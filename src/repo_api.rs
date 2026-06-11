@@ -70,8 +70,7 @@ pub fn search_aur(term: &str) -> Result<Vec<Found>> {
         url_encode(term)
     );
     let body = get_json(&url)?;
-    let resp: AurResponse =
-        serde_json::from_str(&body).context("JSON invalido del AUR")?;
+    let resp: AurResponse = serde_json::from_str(&body).context("JSON invalido del AUR")?;
     let mut out: Vec<Found> = resp
         .results
         .into_iter()
@@ -130,5 +129,42 @@ pub fn search(source: Source, term: &str) -> Result<Vec<Found>> {
     match source {
         Source::Official => search_official(term),
         Source::Aur => search_aur(term),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn url_encode_keeps_safe_chars() {
+        assert_eq!(
+            url_encode("visual-studio-code-bin"),
+            "visual-studio-code-bin"
+        );
+        assert_eq!(url_encode("python3.12_x"), "python3.12_x");
+    }
+
+    #[test]
+    fn url_encode_escapes_special_chars() {
+        assert_eq!(url_encode("a b"), "a%20b");
+        assert_eq!(url_encode("c++"), "c%2B%2B");
+        assert_eq!(url_encode("ñoño"), "%C3%B1o%C3%B1o");
+    }
+
+    #[test]
+    fn aur_response_parses_real_shape() {
+        let body = r#"{"resultcount":1,"results":[{"Name":"spotify","Description":"A streaming service"}],"type":"search","version":5}"#;
+        let resp: AurResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(resp.results.len(), 1);
+        assert_eq!(resp.results[0].name, "spotify");
+    }
+
+    #[test]
+    fn official_response_parses_real_shape() {
+        let body = r#"{"version":2,"results":[{"pkgname":"firefox","pkgdesc":"Browser","repo":"extra","arch":"x86_64"}]}"#;
+        let resp: OfficialResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(resp.results.len(), 1);
+        assert_eq!(resp.results[0].pkgname, "firefox");
     }
 }
