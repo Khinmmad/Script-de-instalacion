@@ -1,0 +1,50 @@
+name: ci
+
+# Valida cada push y pull request: formato, lints, tests y compilacion
+# del binario estatico (el mismo target que se distribuye).
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar toolchain Rust + target musl
+        run: |
+          rustup update stable
+          rustup component add rustfmt clippy
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Instalar musl-tools (necesario para compilar TLS/ring)
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Cache de dependencias
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Formato (cargo fmt)
+        run: cargo fmt --check
+
+      - name: Lints (cargo clippy)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests (cargo test)
+        run: cargo test
+
+      - name: Compilar binario estatico
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: cargo build --release --target x86_64-unknown-linux-musl

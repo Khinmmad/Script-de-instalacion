@@ -33,12 +33,16 @@ enum Mode {
     Search,
     LoadProfile,
     SaveProfile,
+    Review,
 }
 
 /// Resultado del asistente.
 pub enum Outcome {
     Cancelled,
-    Confirmed { plan: InstallPlan, save_as: Option<String> },
+    Confirmed {
+        plan: InstallPlan,
+        save_as: Option<String>,
+    },
 }
 
 /// Entradas del menu principal.
@@ -189,6 +193,22 @@ impl App {
     }
 }
 
+/// Navegacion comun de listas: flechas, j/k, Home/End y PageUp/PageDown.
+fn move_cursor(cursor: &mut usize, len: usize, code: KeyCode) {
+    if len == 0 {
+        return;
+    }
+    match code {
+        KeyCode::Up | KeyCode::Char('k') => *cursor = (*cursor + len - 1) % len,
+        KeyCode::Down | KeyCode::Char('j') => *cursor = (*cursor + 1) % len,
+        KeyCode::Home => *cursor = 0,
+        KeyCode::End => *cursor = len - 1,
+        KeyCode::PageUp => *cursor = cursor.saturating_sub(10),
+        KeyCode::PageDown => *cursor = (*cursor + 10).min(len - 1),
+        _ => {}
+    }
+}
+
 /// Anade o alterna un paquete en una lista por nombre. Devuelve si quedo activo.
 fn toggle_into(vec: &mut Vec<PkgItem>, name: &str, desc: &str) -> bool {
     if let Some(it) = vec.iter_mut().find(|p| p.name == name) {
@@ -259,6 +279,16 @@ pub fn run() -> Result<Outcome> {
             Mode::Search => handle_search(&mut app, key.code),
             Mode::LoadProfile => handle_load_profile(&mut app, key.code),
             Mode::SaveProfile => {} // se maneja via typing
+            Mode::Review => match key.code {
+                KeyCode::Enter => {
+                    break Outcome::Confirmed {
+                        plan: app.build_plan(),
+                        save_as: None,
+                    };
+                }
+                KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Main,
+                _ => {}
+            },
         }
     };
 
@@ -318,14 +348,9 @@ fn handle_text_submit(app: &mut App) {
 }
 
 fn handle_main(app: &mut App, code: KeyCode) -> Option<Outcome> {
+    move_cursor(&mut app.main_cursor, MENU.len(), code);
     match code {
         KeyCode::Char('q') | KeyCode::Esc => return Some(Outcome::Cancelled),
-        KeyCode::Up | KeyCode::Char('k') => {
-            app.main_cursor = (app.main_cursor + MENU.len() - 1) % MENU.len();
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            app.main_cursor = (app.main_cursor + 1) % MENU.len();
-        }
         KeyCode::Enter => match app.main_cursor {
             0 => {
                 app.mode = Mode::Desktop;
@@ -361,7 +386,12 @@ fn handle_main(app: &mut App, code: KeyCode) -> Option<Outcome> {
             }
             6 => {
                 let plan = app.build_plan();
-                return Some(Outcome::Confirmed { plan, save_as: None });
+                if plan.is_empty() {
+                    app.status = "Nada que instalar: elige un entorno o marca paquetes.".into();
+                } else {
+                    app.mode = Mode::Review;
+                    app.status = "Revisa el plan. Enter confirma, Esc vuelve al menu.".into();
+                }
             }
             _ => return Some(Outcome::Cancelled),
         },
@@ -371,15 +401,9 @@ fn handle_main(app: &mut App, code: KeyCode) -> Option<Outcome> {
 }
 
 fn handle_desktop(app: &mut App, code: KeyCode) {
-    let len = DESKTOP_ENVIRONMENTS.len();
+    move_cursor(&mut app.list_cursor, DESKTOP_ENVIRONMENTS.len(), code);
     match code {
         KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Main,
-        KeyCode::Up | KeyCode::Char('k') => {
-            app.list_cursor = (app.list_cursor + len - 1) % len;
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            app.list_cursor = (app.list_cursor + 1) % len;
-        }
         KeyCode::Char(' ') | KeyCode::Enter => {
             app.de_index = app.list_cursor;
             let de = &DESKTOP_ENVIRONMENTS[app.de_index];
@@ -395,19 +419,9 @@ fn handle_packages(app: &mut App, code: KeyCode, source: Source) {
         Source::Official => &mut app.official,
         Source::Aur => &mut app.aur,
     };
-    let len = list.len();
+    move_cursor(&mut app.list_cursor, list.len(), code);
     match code {
         KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Main,
-        KeyCode::Up | KeyCode::Char('k') => {
-            if len > 0 {
-                app.list_cursor = (app.list_cursor + len - 1) % len;
-            }
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if len > 0 {
-                app.list_cursor = (app.list_cursor + 1) % len;
-            }
-        }
         KeyCode::Char(' ') => {
             if let Some(it) = list.get_mut(app.list_cursor) {
                 it.selected = !it.selected;
@@ -418,7 +432,7 @@ fn handle_packages(app: &mut App, code: KeyCode, source: Source) {
 }
 
 fn handle_search(app: &mut App, code: KeyCode) {
-    let len = app.search_results.len();
+    move_cursor(&mut app.list_cursor, app.search_results.len(), code);
     match code {
         KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Main,
         KeyCode::Enter => app.mode = Mode::Main,
@@ -436,16 +450,6 @@ fn handle_search(app: &mut App, code: KeyCode) {
                 "Fuente: {}. Escribe y Enter para buscar.",
                 source_label(app.search_source)
             );
-        }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if len > 0 {
-                app.list_cursor = (app.list_cursor + len - 1) % len;
-            }
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if len > 0 {
-                app.list_cursor = (app.list_cursor + 1) % len;
-            }
         }
         KeyCode::Char(' ') => {
             if let Some(res) = app.search_results.get(app.list_cursor).cloned() {
@@ -469,19 +473,9 @@ fn handle_search(app: &mut App, code: KeyCode) {
 }
 
 fn handle_load_profile(app: &mut App, code: KeyCode) {
-    let len = app.profiles.len();
+    move_cursor(&mut app.list_cursor, app.profiles.len(), code);
     match code {
         KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Main,
-        KeyCode::Up | KeyCode::Char('k') => {
-            if len > 0 {
-                app.list_cursor = (app.list_cursor + len - 1) % len;
-            }
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if len > 0 {
-                app.list_cursor = (app.list_cursor + 1) % len;
-            }
-        }
         KeyCode::Enter => {
             if let Some(name) = app.profiles.get(app.list_cursor).cloned() {
                 match profile::load(&name) {
@@ -521,6 +515,7 @@ fn draw(f: &mut Frame, app: &App) {
         Mode::Search => draw_search(f, chunks[1], app),
         Mode::LoadProfile => draw_load_profile(f, chunks[1], app),
         Mode::SaveProfile => draw_save_profile(f, chunks[1], app),
+        Mode::Review => draw_review(f, chunks[1], app),
     }
     draw_status(f, chunks[2], app);
 }
@@ -529,11 +524,18 @@ fn draw_title(f: &mut Frame, area: Rect) {
     let title = Paragraph::new(Line::from(vec![
         Span::styled(
             "  Arch Post-Install  ",
-            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  asistente de post-instalacion (estilo archinstall)"),
     ]))
-    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
     f.render_widget(title, area);
 }
 
@@ -562,12 +564,17 @@ fn draw_main(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().add_modifier(Modifier::BOLD),
             )];
             if !summaries[i].is_empty() {
-                spans.push(Span::styled(summaries[i].clone(), Style::default().fg(Color::Green)));
+                spans.push(Span::styled(
+                    summaries[i].clone(),
+                    Style::default().fg(Color::Green),
+                ));
             }
             if i == 6 {
                 spans = vec![Span::styled(
                     format!("▶ {label}"),
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
                 )];
             }
             ListItem::new(Line::from(spans))
@@ -589,7 +596,13 @@ fn draw_desktop(f: &mut Frame, area: Rect, app: &App) {
             ]))
         })
         .collect();
-    render_list(f, area, items, app.list_cursor, " Entorno de escritorio (Space/Enter elige) ");
+    render_list(
+        f,
+        area,
+        items,
+        app.list_cursor,
+        " Entorno de escritorio (Space/Enter elige) ",
+    );
 }
 
 fn draw_packages(f: &mut Frame, area: Rect, app: &App, source: Source) {
@@ -597,10 +610,7 @@ fn draw_packages(f: &mut Frame, area: Rect, app: &App, source: Source) {
         Source::Official => &app.official,
         Source::Aur => &app.aur,
     };
-    let items: Vec<ListItem> = list
-        .iter()
-        .map(|p| package_item(p))
-        .collect();
+    let items: Vec<ListItem> = list.iter().map(|p| package_item(p)).collect();
     let title = match source {
         Source::Official => " Paquetes oficiales (Space marca) ",
         Source::Aur => " Paquetes AUR (Space marca) ",
@@ -617,8 +627,14 @@ fn package_item(p: &PkgItem) -> ListItem<'_> {
     };
     ListItem::new(Line::from(vec![
         Span::styled(checkbox, cb_style),
-        Span::styled(format!("{:<28}", p.name), Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled(truncate(&p.description, 60), Style::default().fg(Color::Gray)),
+        Span::styled(
+            format!("{:<28}", p.name),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            truncate(&p.description, 60),
+            Style::default().fg(Color::Gray),
+        ),
     ]))
 }
 
@@ -627,14 +643,23 @@ fn draw_search(f: &mut Frame, area: Rect, app: &App) {
 
     let cursor = if app.typing { "_" } else { "" };
     let input = Paragraph::new(Line::from(vec![
-        Span::styled(format!(" [{}] ", source_label(app.search_source)), Style::default().fg(Color::Yellow)),
+        Span::styled(
+            format!(" [{}] ", source_label(app.search_source)),
+            Style::default().fg(Color::Yellow),
+        ),
         Span::raw("Buscar: "),
         Span::styled(
             format!("{}{cursor}", app.search_input),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         ),
     ]))
-    .block(Block::default().borders(Borders::ALL).title(" Buscador en vivo (Tab cambia fuente) "));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Buscador en vivo (Tab cambia fuente) "),
+    );
     f.render_widget(input, rows[0]);
 
     let items: Vec<ListItem> = app.search_results.iter().map(|p| package_item(p)).collect();
@@ -644,24 +669,47 @@ fn draw_search(f: &mut Frame, area: Rect, app: &App) {
             .block(Block::default().borders(Borders::ALL));
         f.render_widget(hint, rows[1]);
     } else {
-        render_list(f, rows[1], items, app.list_cursor, " Resultados (Space anade/quita) ");
+        render_list(
+            f,
+            rows[1],
+            items,
+            app.list_cursor,
+            " Resultados (Space anade/quita) ",
+        );
     }
 }
 
 fn draw_load_profile(f: &mut Frame, area: Rect, app: &App) {
     if app.profiles.is_empty() {
-        let p = Paragraph::new("No hay perfiles guardados.\n\nUsa 'Guardar perfil' en el menu para crear uno.")
-            .wrap(Wrap { trim: true })
-            .block(Block::default().borders(Borders::ALL).title(" Cargar perfil "));
+        let p = Paragraph::new(
+            "No hay perfiles guardados.\n\nUsa 'Guardar perfil' en el menu para crear uno.",
+        )
+        .wrap(Wrap { trim: true })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Cargar perfil "),
+        );
         f.render_widget(p, area);
         return;
     }
     let items: Vec<ListItem> = app
         .profiles
         .iter()
-        .map(|n| ListItem::new(Line::from(Span::styled(n.clone(), Style::default().add_modifier(Modifier::BOLD)))))
+        .map(|n| {
+            ListItem::new(Line::from(Span::styled(
+                n.clone(),
+                Style::default().add_modifier(Modifier::BOLD),
+            )))
+        })
         .collect();
-    render_list(f, area, items, app.list_cursor, " Cargar perfil (Enter aplica) ");
+    render_list(
+        f,
+        area,
+        items,
+        app.list_cursor,
+        " Cargar perfil (Enter aplica) ",
+    );
 }
 
 fn draw_save_profile(f: &mut Frame, area: Rect, app: &App) {
@@ -678,15 +726,110 @@ fn draw_save_profile(f: &mut Frame, area: Rect, app: &App) {
         Line::from(""),
         Line::from("Enter para guardar · Esc para cancelar").fg(Color::DarkGray),
     ])
-    .block(Block::default().borders(Borders::ALL).title(" Guardar perfil "));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Guardar perfil "),
+    );
     f.render_widget(p, area);
+}
+
+fn draw_review(f: &mut Frame, area: Rect, app: &App) {
+    let plan = app.build_plan();
+    let de = &DESKTOP_ENVIRONMENTS[app.de_index];
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  Entorno de escritorio:  "),
+            Span::styled(
+                de.label,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw("  Display manager:        "),
+            Span::styled(
+                plan.display_manager
+                    .clone()
+                    .unwrap_or_else(|| "ninguno".into()),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                format!("  Oficiales ({}):  ", plan.official.len()),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                join_wrapped(&plan.official),
+                Style::default().fg(Color::Gray),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                format!("  AUR ({}):  ", plan.aur.len()),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(join_wrapped(&plan.aur), Style::default().fg(Color::Gray)),
+        ]),
+        Line::from(""),
+    ];
+    if plan.display_manager.is_some() {
+        lines.push(Line::from(Span::styled(
+            "  Se habilitara el display manager y NetworkManager con systemctl.",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            "Enter",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" confirma e instala  ·  "),
+        Span::styled(
+            "Esc",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" vuelve al menu"),
+    ]));
+
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Revision del plan "),
+    );
+    f.render_widget(p, area);
+}
+
+fn join_wrapped(items: &[String]) -> String {
+    if items.is_empty() {
+        "(ninguno)".to_string()
+    } else {
+        items.join(", ")
+    }
 }
 
 fn render_list(f: &mut Frame, area: Rect, items: Vec<ListItem>, cursor: usize, title: &str) {
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title.to_string()))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title.to_string()),
+        )
         .highlight_style(
-            Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD),
+            Style::default()
+                .bg(Color::Cyan)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("➤ ");
     let mut state = ListState::default();
@@ -700,10 +843,14 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         Mode::Search => "Tab: fuente · i: editar · Space: anadir · Enter: volver · q: menu",
         Mode::LoadProfile => "↑/↓: mover · Enter: cargar · q: menu",
         Mode::SaveProfile => "Escribe el nombre · Enter: guardar · Esc: cancelar",
+        Mode::Review => "Enter: confirmar e instalar · Esc: volver al menu",
         _ => "↑/↓: mover · Space: marcar · q: volver al menu",
     };
     let text = vec![
-        Line::from(Span::styled(app.status.clone(), Style::default().fg(Color::Yellow))),
+        Line::from(Span::styled(
+            app.status.clone(),
+            Style::default().fg(Color::Yellow),
+        )),
         Line::from(Span::styled(help, Style::default().fg(Color::DarkGray))),
     ];
     let p = Paragraph::new(text)
@@ -718,5 +865,93 @@ fn truncate(s: &str, max: usize) -> String {
         format!("{t}…")
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_plan_without_env_has_no_base() {
+        let mut app = App::new();
+        app.de_index = 0; // "ninguno"
+        let plan = app.build_plan();
+        assert!(plan.desktop_env_id.is_none());
+        assert!(plan.display_manager.is_none());
+        assert!(!plan.official.iter().any(|p| p == "xorg-server"));
+    }
+
+    #[test]
+    fn build_plan_with_env_includes_base_and_dm() {
+        let mut app = App::new();
+        let idx = DESKTOP_ENVIRONMENTS
+            .iter()
+            .position(|d| d.id == "kde")
+            .unwrap();
+        app.de_index = idx;
+        let plan = app.build_plan();
+        assert_eq!(plan.desktop_env_id.as_deref(), Some("kde"));
+        assert_eq!(plan.display_manager.as_deref(), Some("sddm"));
+        assert!(plan.official.iter().any(|p| p == "xorg-server"));
+        assert!(plan.official.iter().any(|p| p == "plasma-meta"));
+        assert!(plan.official.iter().any(|p| p == "sddm"));
+    }
+
+    #[test]
+    fn build_plan_deduplicates() {
+        let mut app = App::new();
+        let idx = DESKTOP_ENVIRONMENTS
+            .iter()
+            .position(|d| d.id == "hyprland")
+            .unwrap();
+        app.de_index = idx;
+        // kitty viene del entorno hyprland Y esta marcado por defecto en extras.
+        let plan = app.build_plan();
+        let count = plan.official.iter().filter(|p| *p == "kitty").count();
+        assert_eq!(count, 1, "los paquetes no deben repetirse en el plan");
+    }
+
+    #[test]
+    fn apply_profile_marks_and_adds_packages() {
+        let mut app = App::new();
+        let prof = Profile {
+            name: "t".into(),
+            desktop_environment: Some("gnome".into()),
+            display_manager: Some("gdm".into()),
+            official_packages: vec!["firefox".into(), "paquete-nuevo".into()],
+            aur_packages: vec![],
+        };
+        app.apply_profile(prof);
+        assert_eq!(DESKTOP_ENVIRONMENTS[app.de_index].id, "gnome");
+        let firefox = app.official.iter().find(|p| p.name == "firefox").unwrap();
+        assert!(firefox.selected);
+        // Un paquete del perfil que no estaba en el catalogo se anade marcado.
+        let nuevo = app
+            .official
+            .iter()
+            .find(|p| p.name == "paquete-nuevo")
+            .unwrap();
+        assert!(nuevo.selected);
+        // Lo no incluido en el perfil queda desmarcado.
+        let vlc = app.official.iter().find(|p| p.name == "vlc").unwrap();
+        assert!(!vlc.selected);
+    }
+
+    #[test]
+    fn move_cursor_wraps_and_jumps() {
+        let mut c = 0usize;
+        move_cursor(&mut c, 5, KeyCode::Up);
+        assert_eq!(c, 4, "subir desde el inicio envuelve al final");
+        move_cursor(&mut c, 5, KeyCode::Down);
+        assert_eq!(c, 0);
+        move_cursor(&mut c, 5, KeyCode::End);
+        assert_eq!(c, 4);
+        move_cursor(&mut c, 5, KeyCode::Home);
+        assert_eq!(c, 0);
+        move_cursor(&mut c, 50, KeyCode::PageDown);
+        assert_eq!(c, 10);
+        move_cursor(&mut c, 0, KeyCode::Down); // lista vacia: no panic
+        assert_eq!(c, 10);
     }
 }

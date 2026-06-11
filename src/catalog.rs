@@ -64,6 +64,7 @@ pub const DESKTOP_ENVIRONMENTS: &[DesktopEnvironment] = &[
 ];
 
 /// Paquetes extra ofrecidos por defecto en la TUI (puedes anadir mas buscando).
+#[rustfmt::skip]
 pub const EXTRA_PACKAGES: &[Package] = &[
     // ---- Oficiales ----
     Package { name: "firefox", description: "Navegador web", source: Source::Official, default_on: true },
@@ -84,3 +85,53 @@ pub const EXTRA_PACKAGES: &[Package] = &[
     Package { name: "swww", description: "Daemon de wallpapers para Wayland", source: Source::Aur, default_on: false },
     Package { name: "ags", description: "Aylur's GTK Shell (widgets)", source: Source::Aur, default_on: false },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn no_duplicate_extra_packages() {
+        let mut seen = HashSet::new();
+        for p in EXTRA_PACKAGES {
+            assert!(
+                seen.insert(p.name),
+                "paquete duplicado en catalogo: {}",
+                p.name
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_environment_ids_are_unique() {
+        let mut seen = HashSet::new();
+        for de in DESKTOP_ENVIRONMENTS {
+            assert!(seen.insert(de.id), "id de entorno duplicado: {}", de.id);
+        }
+    }
+
+    #[test]
+    fn first_environment_is_none_option() {
+        // La TUI asume que el indice 0 es "sin entorno grafico".
+        assert_eq!(DESKTOP_ENVIRONMENTS[0].id, "ninguno");
+        assert!(DESKTOP_ENVIRONMENTS[0].packages.is_empty());
+        assert!(DESKTOP_ENVIRONMENTS[0].display_manager.is_none());
+    }
+
+    #[test]
+    fn real_environments_have_display_manager() {
+        for de in DESKTOP_ENVIRONMENTS.iter().filter(|d| d.id != "ninguno") {
+            assert!(
+                de.display_manager.is_some(),
+                "el entorno {} no tiene display manager",
+                de.id
+            );
+            assert!(
+                !de.packages.is_empty(),
+                "el entorno {} no tiene paquetes",
+                de.id
+            );
+        }
+    }
+}

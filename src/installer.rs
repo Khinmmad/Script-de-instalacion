@@ -29,8 +29,14 @@ pub struct Logger {
 impl Logger {
     pub fn new() -> Self {
         match Self::open_file() {
-            Ok((file, path)) => Logger { file: Some(file), path: Some(path) },
-            Err(_) => Logger { file: None, path: None },
+            Ok((file, path)) => Logger {
+                file: Some(file),
+                path: Some(path),
+            },
+            Err(_) => Logger {
+                file: None,
+                path: None,
+            },
         }
     }
 
@@ -136,7 +142,12 @@ fn ensure_yay(log: &mut Logger, opts: &InstallOptions) -> bool {
     }
     let tmp = "/tmp/yay-postinstall";
     let _ = fs::remove_dir_all(tmp);
-    if !run(log, opts, "git", &["clone", "https://aur.archlinux.org/yay.git", tmp]) {
+    if !run(
+        log,
+        opts,
+        "git",
+        &["clone", "https://aur.archlinux.org/yay.git", tmp],
+    ) {
         return false;
     }
     let mut mk: Vec<&str> = vec!["-si"];
@@ -173,7 +184,10 @@ fn install_one(log: &mut Logger, opts: &InstallOptions, manager: &str, pkg: &str
         run(log, opts, manager, &args)
     };
 
-    StepResult { label: format!("{manager}: {pkg}"), ok }
+    StepResult {
+        label: format!("{manager}: {pkg}"),
+        ok,
+    }
 }
 
 /// Ejecuta el plan completo y devuelve los resultados de cada paso.
@@ -186,7 +200,10 @@ pub fn execute(plan: &InstallPlan, opts: &InstallOptions, log: &mut Logger) -> V
         syu.push("--noconfirm");
     }
     let synced = run(log, opts, "sudo", &syu);
-    results.push(StepResult { label: "pacman -Syu".into(), ok: synced });
+    results.push(StepResult {
+        label: "pacman -Syu".into(),
+        ok: synced,
+    });
 
     if !plan.official.is_empty() {
         log.log("==> Instalando paquetes oficiales (uno por uno para robustez)");
@@ -204,21 +221,40 @@ pub fn execute(plan: &InstallPlan, opts: &InstallOptions, log: &mut Logger) -> V
         } else {
             log.log("  ! No se pudo preparar yay; se omiten los paquetes AUR.");
             for pkg in &plan.aur {
-                results.push(StepResult { label: format!("yay: {pkg}"), ok: false });
+                results.push(StepResult {
+                    label: format!("yay: {pkg}"),
+                    ok: false,
+                });
             }
         }
     }
 
     if let Some(dm) = &plan.display_manager {
         log.log(&format!("==> Habilitando display manager: {dm}"));
-        let ok = run(log, opts, "sudo", &["systemctl", "enable", &format!("{dm}.service")]);
-        results.push(StepResult { label: format!("enable {dm}"), ok });
+        let ok = run(
+            log,
+            opts,
+            "sudo",
+            &["systemctl", "enable", &format!("{dm}.service")],
+        );
+        results.push(StepResult {
+            label: format!("enable {dm}"),
+            ok,
+        });
     }
 
     // NetworkManager casi siempre se quiere activo.
     if plan.official.iter().any(|p| p == "networkmanager") {
-        let ok = run(log, opts, "sudo", &["systemctl", "enable", "NetworkManager.service"]);
-        results.push(StepResult { label: "enable NetworkManager".into(), ok });
+        let ok = run(
+            log,
+            opts,
+            "sudo",
+            &["systemctl", "enable", "NetworkManager.service"],
+        );
+        results.push(StepResult {
+            label: "enable NetworkManager".into(),
+            ok,
+        });
     }
 
     results

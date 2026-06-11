@@ -112,7 +112,9 @@ sección, la configuras y vuelves al menú:
 - **Buscar y añadir paquetes** — busca en vivo en los repos oficiales o el AUR
   (Tab cambia la fuente) y añade cualquier paquete a tu selección.
 - **Cargar / Guardar perfil** — gestiona tus perfiles sin salir del programa.
-- **Instalar ahora** — aplica todo.
+- **Instalar ahora** — muestra una **pantalla de revisión** con el plan completo
+  (entorno, display manager y todos los paquetes); confirmas con Enter y se
+  instala.
 
 > No lo corras como `root`. El programa usa `sudo` cuando hace falta.
 
@@ -140,6 +142,8 @@ arch-postinstall --help
 | Tecla             | Acción                                            |
 | ----------------- | ------------------------------------------------- |
 | `↑`/`↓` o `k`/`j` | Mover el cursor                                   |
+| `Home`/`End`      | Saltar al inicio / final de la lista              |
+| `PgUp`/`PgDn`     | Saltar 10 elementos                               |
 | `Enter`           | Abrir sección / confirmar / "Instalar ahora"      |
 | `Espacio`         | Marcar/desmarcar paquete o entorno                |
 | `q` o `Esc`       | Volver al menú (o salir desde el menú)            |

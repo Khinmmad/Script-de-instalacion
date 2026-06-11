@@ -85,7 +85,10 @@ fn confirm(prompt: &str) -> bool {
     if io::stdin().read_line(&mut input).is_err() {
         return false;
     }
-    matches!(input.trim().to_lowercase().as_str(), "s" | "si" | "sí" | "y" | "yes")
+    matches!(
+        input.trim().to_lowercase().as_str(),
+        "s" | "si" | "sí" | "y" | "yes"
+    )
 }
 
 /// Imprime un resumen del plan en texto plano.
@@ -97,8 +100,16 @@ fn show_plan(plan: &InstallPlan) {
     if let Some(dm) = &plan.display_manager {
         println!("  Display manager: {dm}");
     }
-    println!("  Oficiales ({}) : {}", plan.official.len(), join_or_none(&plan.official));
-    println!("  AUR ({})       : {}", plan.aur.len(), join_or_none(&plan.aur));
+    println!(
+        "  Oficiales ({}) : {}",
+        plan.official.len(),
+        join_or_none(&plan.official)
+    );
+    println!(
+        "  AUR ({})       : {}",
+        plan.aur.len(),
+        join_or_none(&plan.aur)
+    );
     println!();
 }
 
@@ -110,8 +121,10 @@ fn join_or_none(items: &[String]) -> String {
     }
 }
 
-/// Ejecuta un plan: confirma, guarda log y muestra resumen.
-fn run_plan(plan: InstallPlan, cli: &Cli) -> Result<()> {
+/// Ejecuta un plan: confirma (si hace falta), guarda log y muestra resumen.
+/// `already_confirmed` evita preguntar dos veces cuando el plan ya fue
+/// revisado y confirmado en la pantalla de revision de la TUI.
+fn run_plan(plan: InstallPlan, cli: &Cli, already_confirmed: bool) -> Result<()> {
     if plan.is_empty() {
         println!("No hay nada que instalar. Saliendo.");
         return Ok(());
@@ -120,12 +133,11 @@ fn run_plan(plan: InstallPlan, cli: &Cli) -> Result<()> {
     show_plan(&plan);
 
     if installer::is_root() {
-        eprintln!(
-            "Advertencia: estas corriendo como root. makepkg/yay no deben usarse como root."
-        );
+        eprintln!("Advertencia: estas corriendo como root. makepkg/yay no deben usarse como root.");
     }
 
-    if !cli.yes && !cli.dry_run && !confirm("¿Proceder con la instalacion?") {
+    if !already_confirmed && !cli.yes && !cli.dry_run && !confirm("¿Proceder con la instalacion?")
+    {
         println!("Cancelado por el usuario.");
         return Ok(());
     }
@@ -142,6 +154,14 @@ fn run_plan(plan: InstallPlan, cli: &Cli) -> Result<()> {
 }
 
 fn main() -> ExitCode {
+    // Si la app entra en panico con la TUI activa, restaura la terminal
+    // antes de imprimir el error; si no, la consola queda inutilizable.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        ratatui::restore();
+        default_hook(info);
+    }));
+
     let cli = parse_args();
 
     if cli.help {
@@ -174,7 +194,7 @@ fn main() -> ExitCode {
         match profile::load(name) {
             Ok(p) => {
                 println!("Perfil cargado: {}", p.name);
-                if let Err(e) = run_plan(p.into_plan(), &cli) {
+                if let Err(e) = run_plan(p.into_plan(), &cli, false) {
                     eprintln!("Error: {e}");
                     return ExitCode::FAILURE;
                 }
@@ -201,7 +221,7 @@ fn main() -> ExitCode {
                     Err(e) => eprintln!("No se pudo guardar el perfil: {e}"),
                 }
             }
-            if let Err(e) = run_plan(plan, &cli) {
+            if let Err(e) = run_plan(plan, &cli, true) {
                 eprintln!("Error: {e}");
                 return ExitCode::FAILURE;
             }
