@@ -26,6 +26,7 @@ struct PkgItem {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
+    Welcome,
     Main,
     Desktop,
     Official,
@@ -99,7 +100,7 @@ impl App {
             .collect();
 
         App {
-            mode: Mode::Main,
+            mode: Mode::Welcome,
             main_cursor: 0,
             de_index: 0,
             official,
@@ -268,6 +269,11 @@ pub fn run() -> Result<Outcome> {
         }
 
         match app.mode {
+            Mode::Welcome => match key.code {
+                KeyCode::Enter | KeyCode::Char(' ') => app.mode = Mode::Main,
+                KeyCode::Esc | KeyCode::Char('q') => break Outcome::Cancelled,
+                _ => {}
+            },
             Mode::Main => {
                 if let Some(o) = handle_main(&mut app, key.code) {
                     break o;
@@ -508,6 +514,7 @@ fn draw(f: &mut Frame, app: &App) {
 
     draw_title(f, chunks[0]);
     match app.mode {
+        Mode::Welcome => draw_welcome(f, chunks[1]),
         Mode::Main => draw_main(f, chunks[1], app),
         Mode::Desktop => draw_desktop(f, chunks[1], app),
         Mode::Official => draw_packages(f, chunks[1], app, Source::Official),
@@ -537,6 +544,72 @@ fn draw_title(f: &mut Frame, area: Rect) {
             .border_style(Style::default().fg(Color::Cyan)),
     );
     f.render_widget(title, area);
+}
+
+fn draw_welcome(f: &mut Frame, area: Rect) {
+    let cyan = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(Color::DarkGray);
+    let green = Style::default()
+        .fg(Color::Green)
+        .add_modifier(Modifier::BOLD);
+
+    let banner = [
+        r"    _             _      ____           _   ",
+        r"   / \   _ __ ___| |__  |  _ \ ___  ___| |_ ",
+        r"  / _ \ | '__/ __| '_ \ | |_) / _ \/ __| __|",
+        r" / ___ \| | | (__| | | ||  __/ (_) \__ \ |_ ",
+        r"/_/   \_\_|  \___|_| |_||_|   \___/|___/\__|",
+    ];
+
+    let mut lines: Vec<Line> = vec![Line::from("")];
+    for b in banner {
+        lines.push(Line::from(Span::styled(b, cyan)).alignment(Alignment::Center));
+    }
+    lines.push(Line::from(""));
+    lines.push(
+        Line::from(vec![
+            Span::raw("Asistente de post-instalacion para Arch Linux  "),
+            Span::styled(format!("v{}", env!("CARGO_PKG_VERSION")), dim),
+        ])
+        .alignment(Alignment::Center),
+    );
+    lines.push(Line::from(""));
+    for feat in [
+        "🎨  Elige tu entorno de escritorio (KDE, GNOME, Hyprland, Qtile…)",
+        "📦  Marca paquetes oficiales y del AUR con checklists",
+        "🔎  Busca en vivo cualquier paquete (repos oficiales + AUR)",
+        "💾  Guarda y reutiliza tu configuracion como perfil",
+    ] {
+        lines.push(Line::from(Span::raw(feat)).alignment(Alignment::Center));
+    }
+    lines.push(Line::from(""));
+    lines.push(
+        Line::from(vec![
+            Span::styled("▶ Pulsa ", green),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" para comenzar", green),
+            Span::raw("   ·   "),
+            Span::styled(
+                "q",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" para salir"),
+        ])
+        .alignment(Alignment::Center),
+    );
+
+    let p = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL))
+        .wrap(Wrap { trim: false });
+    f.render_widget(p, area);
 }
 
 fn draw_main(f: &mut Frame, area: Rect, app: &App) {
@@ -839,6 +912,7 @@ fn render_list(f: &mut Frame, area: Rect, items: Vec<ListItem>, cursor: usize, t
 
 fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     let help = match app.mode {
+        Mode::Welcome => "Enter: comenzar · q: salir",
         Mode::Main => "↑/↓: mover · Enter: abrir · q: salir",
         Mode::Search => "Tab: fuente · i: editar · Space: anadir · Enter: volver · q: menu",
         Mode::LoadProfile => "↑/↓: mover · Enter: cargar · q: menu",

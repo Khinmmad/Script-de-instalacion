@@ -6,8 +6,8 @@ post-instalación de Arch Linux: elige tu entorno de escritorio y los paquetes
 deja un log de todo lo que se instaló.
 
 > Este proyecto era originalmente un script de Python incompleto. Se reescribió
-> en Rust para distribuirse como un **único binario sin dependencias** (ideal
-> para una instalación recién hecha donde puede que ni siquiera tengas Python).
+> en Rust: se compila a un **único binario sin dependencias de runtime** (no
+> necesita Python ni librerías externas para ejecutarse).
 
 ## Características
 
@@ -28,84 +28,52 @@ deja un log de todo lo que se instaló.
 > El buscador necesita conexión a internet (consulta `archlinux.org` y
 > `aur.archlinux.org`). El resto del catálogo curado funciona sin buscar.
 
-## Pasos para usarlo (sin compilar) ⚡
+## Requisitos
 
-El repo ya incluye un **binario precompilado estático** (no depende de Python
-ni de librerías del sistema). No necesitas Rust ni compilar nada.
+- Arch Linux (o derivado con `pacman`).
+- Conexión a internet.
+- Toolchain de Rust para compilar: `rustup`/`cargo`
+  (`sudo pacman -S rustup && rustup default stable`).
+
+## Instalación
 
 **1. Clona el repositorio:**
 
 ```bash
 git clone https://github.com/Khinmmad/Script-de-instalacion
-```
-
-**2. Entra a la carpeta:**
-
-```bash
 cd Script-de-instalacion
 ```
 
-**3. Instálalo en tu PATH:**
+**2. Compila en modo release:**
 
 ```bash
-./install.sh
+cargo build --release
 ```
 
-> Esto copia el binario a `~/.local/bin`. Para instalarlo para todos los
-> usuarios en `/usr/local/bin`, usa `./install.sh --system` (pide sudo).
+El binario queda en `./target/release/arch-postinstall`.
 
-**4. Ejecútalo escribiendo su nombre:**
+**3. Ejecútalo:**
 
 ```bash
-arch-postinstall
+./target/release/arch-postinstall
 ```
 
-Se abrirá el asistente: sigue los 4 pasos en pantalla (entorno → paquetes
-oficiales → paquetes AUR → revisión) y confirma para instalar.
+> Opcional: para llamarlo por su nombre desde cualquier sitio, copia el binario
+> a tu PATH, p. ej. `cp target/release/arch-postinstall ~/.local/bin/`.
 
 > No lo corras como `root`. El programa usa `sudo` cuando hace falta.
-
-### Alternativa: ejecutarlo sin instalar
-
-Si prefieres no copiarlo al PATH, ejecútalo directamente desde la carpeta:
-
-```bash
-./dist/arch-postinstall-x86_64-linux
-```
-
-### Alternativa: descargar de Releases
-
-También puedes bajar el binario desde la sección
-[Releases](https://github.com/Khinmmad/Script-de-instalacion/releases) (se
-publica automáticamente al subir un tag `vX.Y.Z`), darle permisos de ejecución
-con `chmod +x` y correrlo.
-
-## Requisitos
-
-- Arch Linux (o derivado con `pacman`).
-- Conexión a internet.
-- **Para usar el binario precompilado:** nada más (es estático).
-- **Solo si quieres compilarlo tú:** toolchain de Rust (`rustup`/`cargo`).
-
-## Compilación (opcional, solo si modificas el código)
-
-```bash
-git clone https://github.com/Khinmmad/Script-de-instalacion
-cd Script-de-instalacion
-cargo build --release
-# El binario queda en ./target/release/arch-postinstall
-```
 
 ## Uso
 
 ### Asistente interactivo (por defecto)
 
 ```bash
-arch-postinstall
+./target/release/arch-postinstall
 ```
 
-Se abre un **menú principal** (estilo `archinstall`). Desde ahí entras a cada
-sección, la configuras y vuelves al menú:
+Primero verás una **pantalla de bienvenida**; pulsa Enter para entrar al
+**menú principal** (estilo `archinstall`). Desde ahí entras a cada sección, la
+configuras y vuelves al menú:
 
 - **Entorno de escritorio** — elige uno (KDE, GNOME, Hyprland, Qtile o ninguno).
 - **Paquetes oficiales / Paquetes AUR** — marca/desmarca con la barra espaciadora.
@@ -115,8 +83,6 @@ sección, la configuras y vuelves al menú:
 - **Instalar ahora** — muestra una **pantalla de revisión** con el plan completo
   (entorno, display manager y todos los paquetes); confirmas con Enter y se
   instala.
-
-> No lo corras como `root`. El programa usa `sudo` cuando hace falta.
 
 ### Línea de comandos
 
