@@ -21,7 +21,13 @@ jobs:
           rustup update stable
           rustup target add x86_64-unknown-linux-musl
 
+      - name: Instalar musl-tools (necesario para compilar TLS/ring)
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
       - name: Compilar binario estatico
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: cargo build --release --target x86_64-unknown-linux-musl
 
       - name: Renombrar artefacto
