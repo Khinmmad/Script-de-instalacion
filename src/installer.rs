@@ -229,35 +229,45 @@ pub fn execute(plan: &InstallPlan, opts: &InstallOptions, log: &mut Logger) -> V
         }
     }
 
-    if let Some(dm) = &plan.display_manager {
-        log.log(&format!("==> Habilitando display manager: {dm}"));
-        let ok = run(
-            log,
-            opts,
-            "sudo",
-            &["systemctl", "enable", &format!("{dm}.service")],
-        );
-        results.push(StepResult {
-            label: format!("enable {dm}"),
-            ok,
-        });
+    // Servicios de sistema: display manager (sddm/gdm/lightdm), NetworkManager,
+    // bluetooth... Esto deja el equipo listo para arrancar al escritorio.
+    if !plan.services.is_empty() {
+        log.log("==> Habilitando servicios de sistema (systemctl enable)");
+        for svc in &plan.services {
+            let unit = unit_name(svc);
+            let ok = run(log, opts, "sudo", &["systemctl", "enable", &unit]);
+            results.push(StepResult {
+                label: format!("enable {svc}"),
+                ok,
+            });
+        }
     }
 
-    // NetworkManager casi siempre se quiere activo.
-    if plan.official.iter().any(|p| p == "networkmanager") {
-        let ok = run(
-            log,
-            opts,
-            "sudo",
-            &["systemctl", "enable", "NetworkManager.service"],
-        );
+    // Servicios de usuario: stack de audio PipeWire. Se habilitan para el
+    // usuario actual (sin sudo); puede no haber sesion de usuario durante una
+    // post-instalacion, en cuyo caso falla sin abortar el resto.
+    if !plan.user_services.is_empty() {
+        log.log("==> Habilitando audio para el usuario (systemctl --user enable)");
+        let units: Vec<String> = plan.user_services.iter().map(|s| unit_name(s)).collect();
+        let mut args: Vec<&str> = vec!["--user", "enable"];
+        args.extend(units.iter().map(|s| s.as_str()));
+        let ok = run(log, opts, "systemctl", &args);
         results.push(StepResult {
-            label: "enable NetworkManager".into(),
+            label: "enable audio (--user)".into(),
             ok,
         });
     }
 
     results
+}
+
+/// Normaliza el nombre de una unidad systemd (anade .service si no trae sufijo).
+fn unit_name(name: &str) -> String {
+    if name.contains('.') {
+        name.to_string()
+    } else {
+        format!("{name}.service")
+    }
 }
 
 /// Imprime un resumen final legible.

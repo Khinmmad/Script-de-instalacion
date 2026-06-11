@@ -110,6 +110,11 @@ fn show_plan(plan: &InstallPlan) {
         plan.aur.len(),
         join_or_none(&plan.aur)
     );
+    let mut svcs = plan.services.clone();
+    if !plan.user_services.is_empty() {
+        svcs.push("audio (PipeWire, --user)".into());
+    }
+    println!("  Servicios      : {}", join_or_none(&svcs));
     println!();
 }
 

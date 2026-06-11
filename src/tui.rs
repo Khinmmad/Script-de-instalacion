@@ -12,7 +12,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::catalog::{BASE_PACKAGES, DESKTOP_ENVIRONMENTS, EXTRA_PACKAGES};
+use crate::catalog::{BASE_PACKAGES, DESKTOP_ENVIRONMENTS, DRIVERS, EXTRA_PACKAGES};
 use crate::model::{InstallPlan, Profile, Source};
 use crate::{profile, repo_api};
 
@@ -29,6 +29,7 @@ enum Mode {
     Welcome,
     Main,
     Desktop,
+    Drivers,
     Official,
     Aur,
     Search,
@@ -46,9 +47,10 @@ pub enum Outcome {
     },
 }
 
-/// Entradas del menu principal.
+/// Entradas del menu principal. Los indices se usan en `handle_main`.
 const MENU: &[&str] = &[
     "Entorno de escritorio",
+    "Controladores (drivers GPU + microcodigo)",
     "Paquetes oficiales",
     "Paquetes AUR",
     "Buscar y anadir paquetes (oficial/AUR)",
@@ -58,10 +60,23 @@ const MENU: &[&str] = &[
     "Salir",
 ];
 
+// Indices de las entradas del menu principal (deben coincidir con MENU).
+const MENU_DESKTOP: usize = 0;
+const MENU_DRIVERS: usize = 1;
+const MENU_OFFICIAL: usize = 2;
+const MENU_AUR: usize = 3;
+const MENU_SEARCH: usize = 4;
+const MENU_LOAD: usize = 5;
+const MENU_SAVE: usize = 6;
+const MENU_INSTALL: usize = 7;
+const MENU_QUIT: usize = 8;
+
 struct App {
     mode: Mode,
     main_cursor: usize,
     de_index: usize,
+    /// Marcado/no marcado, paralelo a `catalog::DRIVERS`.
+    drivers: Vec<bool>,
     official: Vec<PkgItem>,
     aur: Vec<PkgItem>,
     list_cursor: usize,
@@ -99,10 +114,13 @@ impl App {
             })
             .collect();
 
+        let drivers = DRIVERS.iter().map(|d| d.default_on).collect();
+
         App {
             mode: Mode::Welcome,
             main_cursor: 0,
             de_index: 0,
+            drivers,
             official,
             aur,
             list_cursor: 0,
@@ -132,6 +150,12 @@ impl App {
                 official.push(dm.to_string());
             }
         }
+        // Controladores seleccionados (todos oficiales).
+        for (i, driver) in DRIVERS.iter().enumerate() {
+            if self.drivers.get(i).copied().unwrap_or(false) {
+                official.extend(driver.packages.iter().map(|s| s.to_string()));
+            }
+        }
         for p in self.official.iter().filter(|p| p.selected) {
             official.push(p.name.clone());
         }
@@ -144,16 +168,17 @@ impl App {
         aur.sort();
         aur.dedup();
 
-        InstallPlan {
-            desktop_env_id: (de.id != "ninguno").then(|| de.id.to_string()),
-            display_manager: if de.id == "ninguno" {
-                None
-            } else {
-                de.display_manager.map(|s| s.to_string())
-            },
-            official,
-            aur,
-        }
+        let de_id = (de.id != "ninguno").then(|| de.id.to_string());
+        let dm = if de.id == "ninguno" {
+            None
+        } else {
+            de.display_manager.map(|s| s.to_string())
+        };
+        InstallPlan::new(de_id, dm, official, aur)
+    }
+
+    fn count_drivers(&self) -> usize {
+        self.drivers.iter().filter(|&&d| d).count()
     }
 
     /// Aplica un perfil cargado a la seleccion actual.
@@ -280,6 +305,7 @@ pub fn run() -> Result<Outcome> {
                 }
             }
             Mode::Desktop => handle_desktop(&mut app, key.code),
+            Mode::Drivers => handle_drivers(&mut app, key.code),
             Mode::Official => handle_packages(&mut app, key.code, Source::Official),
             Mode::Aur => handle_packages(&mut app, key.code, Source::Aur),
             Mode::Search => handle_search(&mut app, key.code),
@@ -358,25 +384,30 @@ fn handle_main(app: &mut App, code: KeyCode) -> Option<Outcome> {
     match code {
         KeyCode::Char('q') | KeyCode::Esc => return Some(Outcome::Cancelled),
         KeyCode::Enter => match app.main_cursor {
-            0 => {
+            MENU_DESKTOP => {
                 app.mode = Mode::Desktop;
                 app.list_cursor = app.de_index;
             }
-            1 => {
+            MENU_DRIVERS => {
+                app.mode = Mode::Drivers;
+                app.list_cursor = 0;
+                app.status = "Marca tu GPU y el microcodigo de tu CPU.".into();
+            }
+            MENU_OFFICIAL => {
                 app.mode = Mode::Official;
                 app.list_cursor = 0;
             }
-            2 => {
+            MENU_AUR => {
                 app.mode = Mode::Aur;
                 app.list_cursor = 0;
             }
-            3 => {
+            MENU_SEARCH => {
                 app.mode = Mode::Search;
                 app.typing = true;
                 app.search_results.clear();
                 app.status = "Tab cambia oficial/AUR. Escribe y Enter para buscar.".into();
             }
-            4 => {
+            MENU_LOAD => {
                 app.profiles = profile::list().unwrap_or_default();
                 app.mode = Mode::LoadProfile;
                 app.list_cursor = 0;
@@ -384,13 +415,13 @@ fn handle_main(app: &mut App, code: KeyCode) -> Option<Outcome> {
                     app.status = "No hay perfiles guardados.".into();
                 }
             }
-            5 => {
+            MENU_SAVE => {
                 app.mode = Mode::SaveProfile;
                 app.typing = true;
                 app.name_input.clear();
                 app.status = "Escribe un nombre y Enter para guardar.".into();
             }
-            6 => {
+            MENU_INSTALL => {
                 let plan = app.build_plan();
                 if plan.is_empty() {
                     app.status = "Nada que instalar: elige un entorno o marca paquetes.".into();
@@ -399,7 +430,8 @@ fn handle_main(app: &mut App, code: KeyCode) -> Option<Outcome> {
                     app.status = "Revisa el plan. Enter confirma, Esc vuelve al menu.".into();
                 }
             }
-            _ => return Some(Outcome::Cancelled),
+            MENU_QUIT => return Some(Outcome::Cancelled),
+            _ => {}
         },
         _ => {}
     }
@@ -415,6 +447,19 @@ fn handle_desktop(app: &mut App, code: KeyCode) {
             let de = &DESKTOP_ENVIRONMENTS[app.de_index];
             app.status = format!("Entorno: {}", de.label);
             app.mode = Mode::Main;
+        }
+        _ => {}
+    }
+}
+
+fn handle_drivers(app: &mut App, code: KeyCode) {
+    move_cursor(&mut app.list_cursor, DRIVERS.len(), code);
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Main,
+        KeyCode::Char(' ') => {
+            if let Some(sel) = app.drivers.get_mut(app.list_cursor) {
+                *sel = !*sel;
+            }
         }
         _ => {}
     }
@@ -516,6 +561,7 @@ fn draw(f: &mut Frame, app: &App) {
     match app.mode {
         Mode::Welcome => draw_welcome(f, chunks[1]),
         Mode::Main => draw_main(f, chunks[1], app),
+        Mode::Drivers => draw_drivers(f, chunks[1], app),
         Mode::Desktop => draw_desktop(f, chunks[1], app),
         Mode::Official => draw_packages(f, chunks[1], app, Source::Official),
         Mode::Aur => draw_packages(f, chunks[1], app, Source::Aur),
@@ -616,24 +662,20 @@ fn draw_main(f: &mut Frame, area: Rect, app: &App) {
     let de = &DESKTOP_ENVIRONMENTS[app.de_index];
     let off = App::count_selected(&app.official);
     let aur = App::count_selected(&app.aur);
+    let drv = app.count_drivers();
 
-    let summaries = [
-        format!("[ {} ]", de.label),
-        format!("[ {off} seleccionados ]"),
-        format!("[ {aur} seleccionados ]"),
-        String::new(),
-        String::new(),
-        String::new(),
-        String::new(),
-        String::new(),
-    ];
+    let mut summaries = vec![String::new(); MENU.len()];
+    summaries[MENU_DESKTOP] = format!("[ {} ]", de.label);
+    summaries[MENU_DRIVERS] = format!("[ {drv} seleccionados ]");
+    summaries[MENU_OFFICIAL] = format!("[ {off} seleccionados ]");
+    summaries[MENU_AUR] = format!("[ {aur} seleccionados ]");
 
     let items: Vec<ListItem> = MENU
         .iter()
         .enumerate()
         .map(|(i, label)| {
             let mut spans = vec![Span::styled(
-                format!("{label:<42}"),
+                format!("{label:<44}"),
                 Style::default().add_modifier(Modifier::BOLD),
             )];
             if !summaries[i].is_empty() {
@@ -642,7 +684,7 @@ fn draw_main(f: &mut Frame, area: Rect, app: &App) {
                     Style::default().fg(Color::Green),
                 ));
             }
-            if i == 6 {
+            if i == MENU_INSTALL {
                 spans = vec![Span::styled(
                     format!("▶ {label}"),
                     Style::default()
@@ -655,6 +697,37 @@ fn draw_main(f: &mut Frame, area: Rect, app: &App) {
         .collect();
 
     render_list(f, area, items, app.main_cursor, " Menu principal ");
+}
+
+fn draw_drivers(f: &mut Frame, area: Rect, app: &App) {
+    let items: Vec<ListItem> = DRIVERS
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let on = app.drivers.get(i).copied().unwrap_or(false);
+            let checkbox = if on { "[x] " } else { "[ ] " };
+            let cb_style = if on {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(checkbox, cb_style),
+                Span::styled(
+                    format!("{:<40}", d.label),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(d.packages.join(" "), Style::default().fg(Color::Gray)),
+            ]))
+        })
+        .collect();
+    render_list(
+        f,
+        area,
+        items,
+        app.list_cursor,
+        " Controladores · Space marca (puedes elegir varios) ",
+    );
 }
 
 fn draw_desktop(f: &mut Frame, area: Rect, app: &App) {
@@ -852,13 +925,26 @@ fn draw_review(f: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(""),
     ];
-    if plan.display_manager.is_some() {
-        lines.push(Line::from(Span::styled(
-            "  Se habilitara el display manager y NetworkManager con systemctl.",
-            Style::default().fg(Color::DarkGray),
-        )));
-        lines.push(Line::from(""));
+
+    // Servicios que se habilitaran para dejar el sistema listo para usar.
+    let mut svcs = plan.services.clone();
+    if !plan.user_services.is_empty() {
+        svcs.push("audio (PipeWire, --user)".into());
     }
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  Servicios a habilitar:  ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(join_wrapped(&svcs), Style::default().fg(Color::Gray)),
+    ]));
+    lines.push(Line::from(Span::styled(
+        "  (systemctl enable: el equipo arranca listo para usarse)",
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::styled(

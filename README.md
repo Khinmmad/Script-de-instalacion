@@ -18,6 +18,12 @@ deja un log de todo lo que se instaló.
   no estás limitado a una lista fija (como hacen `yay`/`paru`).
 - 📦 **Selección interactiva de paquetes** oficiales y del AUR con checklist.
 - 🎨 **Entornos de escritorio**: KDE Plasma, GNOME, Hyprland, Qtile o ninguno.
+- 🎮 **Controladores (drivers)**: elige tu GPU (NVIDIA propietario/open, AMD,
+  Intel, nouveau, máquina virtual) y el microcódigo de tu CPU (Intel/AMD).
+- ⚙️ **Deja el sistema listo para usar**: según lo que elijas, habilita
+  automáticamente los servicios — el **display manager** correcto (sddm/gdm/
+  lightdm), **NetworkManager**, **Bluetooth** y el **audio** (PipeWire). Arrancas
+  y ya estás en tu escritorio.
 - 🤖 **Instalación automática de `yay`**: lo compila desde el AUR si no está.
 - 🛡️ **Manejo robusto de errores**: los paquetes se instalan uno por uno, así un
   fallo no aborta el resto. Al final ves un resumen de éxitos y fallos.
@@ -76,13 +82,20 @@ Primero verás una **pantalla de bienvenida**; pulsa Enter para entrar al
 configuras y vuelves al menú:
 
 - **Entorno de escritorio** — elige uno (KDE, GNOME, Hyprland, Qtile o ninguno).
+- **Controladores (drivers)** — marca tu GPU y el microcódigo de tu CPU; puedes
+  elegir varios (p. ej. Intel + NVIDIA en portátiles híbridos).
 - **Paquetes oficiales / Paquetes AUR** — marca/desmarca con la barra espaciadora.
 - **Buscar y añadir paquetes** — busca en vivo en los repos oficiales o el AUR
   (Tab cambia la fuente) y añade cualquier paquete a tu selección.
 - **Cargar / Guardar perfil** — gestiona tus perfiles sin salir del programa.
 - **Instalar ahora** — muestra una **pantalla de revisión** con el plan completo
-  (entorno, display manager y todos los paquetes); confirmas con Enter y se
-  instala.
+  (entorno, display manager, paquetes y **servicios que se habilitarán**);
+  confirmas con Enter y se instala.
+
+Tras instalar los paquetes, el programa habilita los servicios necesarios con
+`systemctl` para que el equipo arranque listo: el display manager del entorno
+elegido, NetworkManager, Bluetooth (si instalaste `bluez`) y el audio de
+PipeWire. Un paso que falle queda registrado pero no aborta el resto.
 
 ### Línea de comandos
 

@@ -37,21 +37,90 @@ pub struct DesktopEnvironment {
     pub display_manager: Option<&'static str>,
 }
 
+/// Un conjunto de controladores (GPU o microcodigo) seleccionable.
+#[derive(Debug, Clone)]
+pub struct DriverBundle {
+    /// Clave estable (ej. "nvidia"). Usada como identificador unico en el
+    /// catalogo y sus tests; reservada para futura persistencia en perfiles.
+    #[allow(dead_code)]
+    pub id: &'static str,
+    /// Nombre legible mostrado en la TUI.
+    pub label: &'static str,
+    /// Paquetes oficiales que instala este controlador.
+    pub packages: &'static [&'static str],
+    /// Si viene marcado por defecto.
+    pub default_on: bool,
+}
+
 /// Plan concreto que el usuario confirmo y que el instalador ejecutara.
 #[derive(Debug, Clone)]
 pub struct InstallPlan {
     pub desktop_env_id: Option<String>,
     pub display_manager: Option<String>,
-    /// Paquetes oficiales a instalar (incluye base + entorno + extras elegidos).
+    /// Paquetes oficiales a instalar (incluye base + entorno + drivers + extras).
     pub official: Vec<String>,
     /// Paquetes del AUR a instalar.
     pub aur: Vec<String>,
+    /// Servicios de sistema a habilitar (NetworkManager, bluetooth, el DM...).
+    pub services: Vec<String>,
+    /// Servicios de usuario a habilitar (stack de audio PipeWire).
+    pub user_services: Vec<String>,
 }
 
 impl InstallPlan {
+    /// Construye un plan derivando automaticamente los servicios a habilitar
+    /// a partir de los paquetes elegidos y el display manager.
+    pub fn new(
+        desktop_env_id: Option<String>,
+        display_manager: Option<String>,
+        official: Vec<String>,
+        aur: Vec<String>,
+    ) -> Self {
+        let (services, user_services) = derive_services(&official, &display_manager);
+        InstallPlan {
+            desktop_env_id,
+            display_manager,
+            official,
+            aur,
+            services,
+            user_services,
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.official.is_empty() && self.aur.is_empty()
     }
+}
+
+/// Decide que servicios habilitar segun los paquetes instalados. Esto es lo que
+/// deja el sistema "listo para usar" tras la instalacion.
+fn derive_services(official: &[String], dm: &Option<String>) -> (Vec<String>, Vec<String>) {
+    let has = |name: &str| official.iter().any(|p| p == name);
+
+    let mut system = Vec::new();
+    if let Some(dm) = dm {
+        system.push(dm.clone()); // ej. sddm / gdm / lightdm
+    }
+    if has("networkmanager") {
+        system.push("NetworkManager".into());
+    }
+    if has("bluez") || has("bluez-utils") {
+        system.push("bluetooth".into());
+    }
+
+    // El stack de audio de PipeWire corre como servicios de usuario.
+    let mut user = Vec::new();
+    if has("pipewire") {
+        user.push("pipewire".into());
+        if has("pipewire-pulse") {
+            user.push("pipewire-pulse".into());
+        }
+        if has("wireplumber") {
+            user.push("wireplumber".into());
+        }
+    }
+
+    (system, user)
 }
 
 /// Perfil persistible en disco (TOML) para reproducir una instalacion.
@@ -80,12 +149,12 @@ impl Profile {
     }
 
     pub fn into_plan(self) -> InstallPlan {
-        InstallPlan {
-            desktop_env_id: self.desktop_environment,
-            display_manager: self.display_manager,
-            official: self.official_packages,
-            aur: self.aur_packages,
-        }
+        InstallPlan::new(
+            self.desktop_environment,
+            self.display_manager,
+            self.official_packages,
+            self.aur_packages,
+        )
     }
 }
 
@@ -94,12 +163,12 @@ mod tests {
     use super::*;
 
     fn sample_plan() -> InstallPlan {
-        InstallPlan {
-            desktop_env_id: Some("hyprland".into()),
-            display_manager: Some("sddm".into()),
-            official: vec!["firefox".into(), "kitty".into()],
-            aur: vec!["spotify".into()],
-        }
+        InstallPlan::new(
+            Some("hyprland".into()),
+            Some("sddm".into()),
+            vec!["firefox".into(), "kitty".into()],
+            vec!["spotify".into()],
+        )
     }
 
     #[test]
@@ -134,13 +203,38 @@ mod tests {
 
     #[test]
     fn empty_plan_is_empty() {
-        let plan = InstallPlan {
-            desktop_env_id: None,
-            display_manager: None,
-            official: vec![],
-            aur: vec![],
-        };
+        let plan = InstallPlan::new(None, None, vec![], vec![]);
         assert!(plan.is_empty());
         assert!(!sample_plan().is_empty());
+    }
+
+    #[test]
+    fn services_are_derived_from_packages() {
+        let plan = InstallPlan::new(
+            Some("kde".into()),
+            Some("sddm".into()),
+            vec![
+                "networkmanager".into(),
+                "bluez".into(),
+                "pipewire".into(),
+                "pipewire-pulse".into(),
+                "wireplumber".into(),
+            ],
+            vec![],
+        );
+        assert!(plan.services.contains(&"sddm".to_string()));
+        assert!(plan.services.contains(&"NetworkManager".to_string()));
+        assert!(plan.services.contains(&"bluetooth".to_string()));
+        assert_eq!(
+            plan.user_services,
+            vec!["pipewire", "pipewire-pulse", "wireplumber"]
+        );
+    }
+
+    #[test]
+    fn no_services_without_relevant_packages() {
+        let plan = InstallPlan::new(None, None, vec!["firefox".into()], vec![]);
+        assert!(plan.services.is_empty());
+        assert!(plan.user_services.is_empty());
     }
 }
