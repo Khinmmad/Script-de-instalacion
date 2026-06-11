@@ -1,14 +1,12 @@
 //! Catalogo por defecto de paquetes y entornos de escritorio.
 //!
-//! Migrado y corregido desde los antiguos `config/paquetes.py`,
-//! `config/paquetes_aur.py` y `config/entorno.py`. Aqui se arreglaron
-//! varios bugs del original (comas faltantes que fusionaban entradas,
-//! el paquete "awww" que en realidad es "swww", etc.).
+//! Es solo un punto de partida: desde la TUI puedes buscar y anadir cualquier
+//! otro paquete (oficial o del AUR) en vivo. Los nombres aqui estan revisados
+//! contra los repositorios actuales de Arch Linux.
 
 use crate::model::{DesktopEnvironment, Package, Source};
 
-/// Paquetes base comunes a cualquier entorno grafico.
-/// Equivale a la lista `base` del antiguo `entorno.py`.
+/// Paquetes base comunes a cualquier entorno grafico (todos oficiales).
 pub const BASE_PACKAGES: &[&str] = &[
     "xorg-server",
     "xorg-xinit",
@@ -34,36 +32,38 @@ pub const DESKTOP_ENVIRONMENTS: &[DesktopEnvironment] = &[
     DesktopEnvironment {
         id: "kde",
         label: "KDE Plasma (Wayland/X11)",
-        packages: &["plasma", "kde-applications"],
+        // plasma-meta es el meta recomendado; konsole+dolphin para terminal y archivos.
+        packages: &["plasma-meta", "konsole", "dolphin"],
         display_manager: Some("sddm"),
     },
     DesktopEnvironment {
         id: "gnome",
         label: "GNOME (Wayland)",
-        packages: &["gnome"],
+        packages: &["gnome", "gnome-terminal"],
         display_manager: Some("gdm"),
     },
     DesktopEnvironment {
         id: "hyprland",
         label: "Hyprland (Wayland, tiling)",
+        // Todos oficiales (repo extra) actualmente.
         packages: &[
             "hyprland",
             "waybar",
             "wofi",
             "xdg-desktop-portal-hyprland",
+            "kitty",
         ],
         display_manager: Some("sddm"),
     },
     DesktopEnvironment {
         id: "qtile",
-        label: "Qtile (X11/Wayland, tiling en Python)",
-        packages: &["qtile", "python", "python-pywlroots"],
+        label: "Qtile (X11, tiling en Python)",
+        packages: &["qtile", "alacritty"],
         display_manager: Some("lightdm"),
     },
 ];
 
-/// Paquetes extra ofrecidos en la TUI (oficiales y AUR).
-/// Migrado de `paquetes.py` y `paquetes_aur.py`, con comas corregidas.
+/// Paquetes extra ofrecidos por defecto en la TUI (puedes anadir mas buscando).
 pub const EXTRA_PACKAGES: &[Package] = &[
     // ---- Oficiales ----
     Package { name: "firefox", description: "Navegador web", source: Source::Official, default_on: true },
@@ -74,7 +74,6 @@ pub const EXTRA_PACKAGES: &[Package] = &[
     Package { name: "htop", description: "Monitor de procesos", source: Source::Official, default_on: true },
     Package { name: "fastfetch", description: "Info del sistema en terminal", source: Source::Official, default_on: true },
     Package { name: "rofi", description: "Lanzador de aplicaciones", source: Source::Official, default_on: false },
-    Package { name: "swww", description: "Daemon de wallpapers para Wayland", source: Source::Official, default_on: false },
     Package { name: "alacritty", description: "Emulador de terminal (GPU)", source: Source::Official, default_on: false },
     Package { name: "kitty", description: "Emulador de terminal (GPU)", source: Source::Official, default_on: true },
     Package { name: "thunar", description: "Gestor de archivos ligero", source: Source::Official, default_on: false },
@@ -82,5 +81,6 @@ pub const EXTRA_PACKAGES: &[Package] = &[
     // ---- AUR ----
     Package { name: "visual-studio-code-bin", description: "Editor de codigo (VS Code)", source: Source::Aur, default_on: true },
     Package { name: "spotify", description: "Cliente de musica", source: Source::Aur, default_on: false },
+    Package { name: "swww", description: "Daemon de wallpapers para Wayland", source: Source::Aur, default_on: false },
     Package { name: "ags", description: "Aylur's GTK Shell (widgets)", source: Source::Aur, default_on: false },
 ];

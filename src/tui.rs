@@ -1,7 +1,6 @@
-//! Interfaz TUI (asistente) construida con ratatui.
-//!
-//! Flujo: Bienvenida -> Entorno de escritorio -> Paquetes oficiales ->
-//! Paquetes AUR -> Revision (guardar perfil) -> confirmar.
+//! Interfaz TUI estilo archinstall: un menu principal navegable por teclado
+//! desde el que se configura cada seccion (entorno, paquetes, busqueda en vivo,
+//! perfiles) y finalmente se lanza la instalacion.
 
 use anyhow::Result;
 use ratatui::{
@@ -14,15 +13,26 @@ use ratatui::{
 };
 
 use crate::catalog::{BASE_PACKAGES, DESKTOP_ENVIRONMENTS, EXTRA_PACKAGES};
-use crate::model::{InstallPlan, Source};
+use crate::model::{InstallPlan, Profile, Source};
+use crate::{profile, repo_api};
+
+/// Un paquete seleccionable (curado o anadido por busqueda).
+#[derive(Clone)]
+struct PkgItem {
+    name: String,
+    description: String,
+    selected: bool,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Screen {
-    Welcome,
-    DesktopEnv,
+enum Mode {
+    Main,
+    Desktop,
     Official,
     Aur,
-    Review,
+    Search,
+    LoadProfile,
+    SaveProfile,
 }
 
 /// Resultado del asistente.
@@ -31,105 +41,97 @@ pub enum Outcome {
     Confirmed { plan: InstallPlan, save_as: Option<String> },
 }
 
+/// Entradas del menu principal.
+const MENU: &[&str] = &[
+    "Entorno de escritorio",
+    "Paquetes oficiales",
+    "Paquetes AUR",
+    "Buscar y anadir paquetes (oficial/AUR)",
+    "Cargar perfil",
+    "Guardar perfil",
+    "Instalar ahora",
+    "Salir",
+];
+
 struct App {
-    screen: Screen,
+    mode: Mode,
+    main_cursor: usize,
     de_index: usize,
-    /// Marcado/no marcado, paralelo a EXTRA_PACKAGES.
-    selected: Vec<bool>,
-    cursor: usize,
-    save_profile: bool,
-    editing_name: bool,
-    profile_name: String,
+    official: Vec<PkgItem>,
+    aur: Vec<PkgItem>,
+    list_cursor: usize,
+    status: String,
+
+    // Busqueda
+    search_source: Source,
+    search_input: String,
+    search_results: Vec<PkgItem>,
+    typing: bool, // true: el texto va al campo de entrada
+
+    // Perfiles
+    profiles: Vec<String>,
+    name_input: String,
 }
 
 impl App {
     fn new() -> Self {
-        let selected = EXTRA_PACKAGES.iter().map(|p| p.default_on).collect();
-        App {
-            screen: Screen::Welcome,
-            de_index: 0,
-            selected,
-            cursor: 0,
-            save_profile: false,
-            editing_name: false,
-            profile_name: String::new(),
-        }
-    }
-
-    /// Indices de EXTRA_PACKAGES que pertenecen a un origen dado.
-    fn indices_for(&self, source: Source) -> Vec<usize> {
-        EXTRA_PACKAGES
+        let official = EXTRA_PACKAGES
             .iter()
-            .enumerate()
-            .filter(|(_, p)| p.source == source)
-            .map(|(i, _)| i)
-            .collect()
-    }
+            .filter(|p| p.source == Source::Official)
+            .map(|p| PkgItem {
+                name: p.name.to_string(),
+                description: p.description.to_string(),
+                selected: p.default_on,
+            })
+            .collect();
+        let aur = EXTRA_PACKAGES
+            .iter()
+            .filter(|p| p.source == Source::Aur)
+            .map(|p| PkgItem {
+                name: p.name.to_string(),
+                description: p.description.to_string(),
+                selected: p.default_on,
+            })
+            .collect();
 
-    fn current_list_len(&self) -> usize {
-        match self.screen {
-            Screen::DesktopEnv => DESKTOP_ENVIRONMENTS.len(),
-            Screen::Official => self.indices_for(Source::Official).len(),
-            Screen::Aur => self.indices_for(Source::Aur).len(),
-            _ => 0,
+        App {
+            mode: Mode::Main,
+            main_cursor: 0,
+            de_index: 0,
+            official,
+            aur,
+            list_cursor: 0,
+            status: "Usa ↑/↓ y Enter. En esta pantalla 'Instalar ahora' lanza todo.".into(),
+            search_source: Source::Official,
+            search_input: String::new(),
+            search_results: Vec::new(),
+            typing: false,
+            profiles: Vec::new(),
+            name_input: String::new(),
         }
     }
 
-    fn move_cursor(&mut self, delta: isize) {
-        let len = self.current_list_len();
-        if len == 0 {
-            return;
-        }
-        let cur = self.cursor as isize + delta;
-        self.cursor = cur.rem_euclid(len as isize) as usize;
-    }
-
-    fn toggle_current(&mut self) {
-        match self.screen {
-            Screen::DesktopEnv => self.de_index = self.cursor,
-            Screen::Official => {
-                let idxs = self.indices_for(Source::Official);
-                if let Some(&i) = idxs.get(self.cursor) {
-                    self.selected[i] = !self.selected[i];
-                }
-            }
-            Screen::Aur => {
-                let idxs = self.indices_for(Source::Aur);
-                if let Some(&i) = idxs.get(self.cursor) {
-                    self.selected[i] = !self.selected[i];
-                }
-            }
-            _ => {}
-        }
+    fn count_selected(items: &[PkgItem]) -> usize {
+        items.iter().filter(|p| p.selected).count()
     }
 
     fn build_plan(&self) -> InstallPlan {
         let de = &DESKTOP_ENVIRONMENTS[self.de_index];
-
         let mut official: Vec<String> = Vec::new();
         let mut aur: Vec<String> = Vec::new();
 
-        // Base + entorno solo si se eligio un entorno real.
         if de.id != "ninguno" {
-            for p in BASE_PACKAGES {
-                official.push((*p).to_string());
-            }
-            for p in de.packages {
-                official.push((*p).to_string());
-            }
+            official.extend(BASE_PACKAGES.iter().map(|s| s.to_string()));
+            official.extend(de.packages.iter().map(|s| s.to_string()));
             if let Some(dm) = de.display_manager {
                 official.push(dm.to_string());
             }
         }
-
-        for (i, pkg) in EXTRA_PACKAGES.iter().enumerate() {
-            if !self.selected[i] {
-                continue;
-            }
-            match pkg.source {
-                Source::Official => official.push(pkg.name.to_string()),
-                Source::Aur => aur.push(pkg.name.to_string()),
-            }
+        for p in self.official.iter().filter(|p| p.selected) {
+            official.push(p.name.clone());
+        }
+        for p in self.aur.iter().filter(|p| p.selected) {
+            aur.push(p.name.clone());
         }
 
         official.sort();
@@ -138,11 +140,7 @@ impl App {
         aur.dedup();
 
         InstallPlan {
-            desktop_env_id: if de.id == "ninguno" {
-                None
-            } else {
-                Some(de.id.to_string())
-            },
+            desktop_env_id: (de.id != "ninguno").then(|| de.id.to_string()),
             display_manager: if de.id == "ninguno" {
                 None
             } else {
@@ -152,13 +150,66 @@ impl App {
             aur,
         }
     }
+
+    /// Aplica un perfil cargado a la seleccion actual.
+    fn apply_profile(&mut self, p: Profile) {
+        if let Some(id) = &p.desktop_environment {
+            if let Some(idx) = DESKTOP_ENVIRONMENTS.iter().position(|d| d.id == *id) {
+                self.de_index = idx;
+            }
+        } else {
+            self.de_index = 0;
+        }
+        // Desmarca todo y luego marca lo del perfil, anadiendo lo que falte.
+        for it in self.official.iter_mut() {
+            it.selected = p.official_packages.contains(&it.name);
+        }
+        for name in &p.official_packages {
+            if !self.official.iter().any(|i| &i.name == name) {
+                self.official.push(PkgItem {
+                    name: name.clone(),
+                    description: "(del perfil)".into(),
+                    selected: true,
+                });
+            }
+        }
+        for it in self.aur.iter_mut() {
+            it.selected = p.aur_packages.contains(&it.name);
+        }
+        for name in &p.aur_packages {
+            if !self.aur.iter().any(|i| &i.name == name) {
+                self.aur.push(PkgItem {
+                    name: name.clone(),
+                    description: "(del perfil)".into(),
+                    selected: true,
+                });
+            }
+        }
+        self.status = format!("Perfil '{}' cargado.", p.name);
+    }
+}
+
+/// Anade o alterna un paquete en una lista por nombre. Devuelve si quedo activo.
+fn toggle_into(vec: &mut Vec<PkgItem>, name: &str, desc: &str) -> bool {
+    if let Some(it) = vec.iter_mut().find(|p| p.name == name) {
+        it.selected = !it.selected;
+        it.selected
+    } else {
+        vec.push(PkgItem {
+            name: name.to_string(),
+            description: desc.to_string(),
+            selected: true,
+        });
+        true
+    }
 }
 
 /// Lanza el asistente TUI y devuelve el resultado.
 pub fn run() -> Result<Outcome> {
     let mut terminal = ratatui::init();
     let mut app = App::new();
-    let result = loop {
+
+    let outcome = loop {
         terminal.draw(|f| draw(f, &app))?;
 
         let Event::Key(key) = event::read()? else {
@@ -168,79 +219,286 @@ pub fn run() -> Result<Outcome> {
             continue;
         }
 
-        // Modo edicion del nombre del perfil (solo en Review).
-        if app.editing_name {
+        // Entrada de texto activa (busqueda o nombre de perfil).
+        if app.typing {
             match key.code {
-                KeyCode::Enter | KeyCode::Esc => app.editing_name = false,
-                KeyCode::Backspace => {
-                    app.profile_name.pop();
+                KeyCode::Esc => {
+                    app.typing = false;
                 }
-                KeyCode::Char(c) => app.profile_name.push(c),
+                KeyCode::Enter => {
+                    handle_text_submit(&mut app);
+                }
+                KeyCode::Backspace => {
+                    if app.mode == Mode::Search {
+                        app.search_input.pop();
+                    } else {
+                        app.name_input.pop();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if app.mode == Mode::Search {
+                        app.search_input.push(c);
+                    } else {
+                        app.name_input.push(c);
+                    }
+                }
                 _ => {}
             }
             continue;
         }
 
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
-                if app.screen == Screen::Welcome {
-                    break Outcome::Cancelled;
+        match app.mode {
+            Mode::Main => {
+                if let Some(o) = handle_main(&mut app, key.code) {
+                    break o;
                 }
-                // Retroceder una pantalla.
-                app.screen = prev_screen(app.screen);
-                app.cursor = 0;
             }
-            KeyCode::Up | KeyCode::Char('k') => app.move_cursor(-1),
-            KeyCode::Down | KeyCode::Char('j') => app.move_cursor(1),
-            KeyCode::Char(' ') => app.toggle_current(),
-            KeyCode::Char('s') if app.screen == Screen::Review => {
-                app.save_profile = !app.save_profile;
-            }
-            KeyCode::Char('n') if app.screen == Screen::Review && app.save_profile => {
-                app.editing_name = true;
-            }
-            KeyCode::Enter => {
-                if app.screen == Screen::Review {
-                    let plan = app.build_plan();
-                    let save_as = if app.save_profile && !app.profile_name.trim().is_empty() {
-                        Some(app.profile_name.trim().to_string())
-                    } else {
-                        None
-                    };
-                    break Outcome::Confirmed { plan, save_as };
-                }
-                // En DesktopEnv, Enter ademas fija la seleccion bajo el cursor.
-                if app.screen == Screen::DesktopEnv {
-                    app.de_index = app.cursor;
-                }
-                app.screen = next_screen(app.screen);
-                app.cursor = 0;
-            }
-            _ => {}
+            Mode::Desktop => handle_desktop(&mut app, key.code),
+            Mode::Official => handle_packages(&mut app, key.code, Source::Official),
+            Mode::Aur => handle_packages(&mut app, key.code, Source::Aur),
+            Mode::Search => handle_search(&mut app, key.code),
+            Mode::LoadProfile => handle_load_profile(&mut app, key.code),
+            Mode::SaveProfile => {} // se maneja via typing
         }
     };
 
     ratatui::restore();
-    Ok(result)
+    Ok(outcome)
 }
 
-fn next_screen(s: Screen) -> Screen {
-    match s {
-        Screen::Welcome => Screen::DesktopEnv,
-        Screen::DesktopEnv => Screen::Official,
-        Screen::Official => Screen::Aur,
-        Screen::Aur => Screen::Review,
-        Screen::Review => Screen::Review,
+fn handle_text_submit(app: &mut App) {
+    match app.mode {
+        Mode::Search => {
+            let term = app.search_input.trim().to_string();
+            if term.is_empty() {
+                app.status = "Escribe algo para buscar.".into();
+                return;
+            }
+            app.status = "Buscando...".into();
+            match repo_api::search(app.search_source, &term) {
+                Ok(found) => {
+                    app.search_results = found
+                        .into_iter()
+                        .map(|f| PkgItem {
+                            name: f.name,
+                            description: f.description,
+                            selected: false,
+                        })
+                        .collect();
+                    app.list_cursor = 0;
+                    app.typing = false;
+                    app.status = format!(
+                        "{} resultados. Space para anadir, Enter vuelve al menu.",
+                        app.search_results.len()
+                    );
+                }
+                Err(e) => {
+                    app.status = format!("Error de busqueda: {e}");
+                    app.typing = false;
+                }
+            }
+        }
+        Mode::SaveProfile => {
+            let name = app.name_input.trim().to_string();
+            if name.is_empty() {
+                app.status = "El nombre no puede estar vacio.".into();
+                return;
+            }
+            let plan = app.build_plan();
+            let prof = Profile::from_plan(&name, &plan);
+            match profile::save(&prof) {
+                Ok(path) => app.status = format!("Perfil guardado: {}", path.display()),
+                Err(e) => app.status = format!("No se pudo guardar: {e}"),
+            }
+            app.typing = false;
+            app.mode = Mode::Main;
+        }
+        _ => {}
     }
 }
 
-fn prev_screen(s: Screen) -> Screen {
+fn handle_main(app: &mut App, code: KeyCode) -> Option<Outcome> {
+    match code {
+        KeyCode::Char('q') | KeyCode::Esc => return Some(Outcome::Cancelled),
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.main_cursor = (app.main_cursor + MENU.len() - 1) % MENU.len();
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.main_cursor = (app.main_cursor + 1) % MENU.len();
+        }
+        KeyCode::Enter => match app.main_cursor {
+            0 => {
+                app.mode = Mode::Desktop;
+                app.list_cursor = app.de_index;
+            }
+            1 => {
+                app.mode = Mode::Official;
+                app.list_cursor = 0;
+            }
+            2 => {
+                app.mode = Mode::Aur;
+                app.list_cursor = 0;
+            }
+            3 => {
+                app.mode = Mode::Search;
+                app.typing = true;
+                app.search_results.clear();
+                app.status = "Tab cambia oficial/AUR. Escribe y Enter para buscar.".into();
+            }
+            4 => {
+                app.profiles = profile::list().unwrap_or_default();
+                app.mode = Mode::LoadProfile;
+                app.list_cursor = 0;
+                if app.profiles.is_empty() {
+                    app.status = "No hay perfiles guardados.".into();
+                }
+            }
+            5 => {
+                app.mode = Mode::SaveProfile;
+                app.typing = true;
+                app.name_input.clear();
+                app.status = "Escribe un nombre y Enter para guardar.".into();
+            }
+            6 => {
+                let plan = app.build_plan();
+                return Some(Outcome::Confirmed { plan, save_as: None });
+            }
+            _ => return Some(Outcome::Cancelled),
+        },
+        _ => {}
+    }
+    None
+}
+
+fn handle_desktop(app: &mut App, code: KeyCode) {
+    let len = DESKTOP_ENVIRONMENTS.len();
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Main,
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.list_cursor = (app.list_cursor + len - 1) % len;
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.list_cursor = (app.list_cursor + 1) % len;
+        }
+        KeyCode::Char(' ') | KeyCode::Enter => {
+            app.de_index = app.list_cursor;
+            let de = &DESKTOP_ENVIRONMENTS[app.de_index];
+            app.status = format!("Entorno: {}", de.label);
+            app.mode = Mode::Main;
+        }
+        _ => {}
+    }
+}
+
+fn handle_packages(app: &mut App, code: KeyCode, source: Source) {
+    let list = match source {
+        Source::Official => &mut app.official,
+        Source::Aur => &mut app.aur,
+    };
+    let len = list.len();
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Main,
+        KeyCode::Up | KeyCode::Char('k') => {
+            if len > 0 {
+                app.list_cursor = (app.list_cursor + len - 1) % len;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if len > 0 {
+                app.list_cursor = (app.list_cursor + 1) % len;
+            }
+        }
+        KeyCode::Char(' ') => {
+            if let Some(it) = list.get_mut(app.list_cursor) {
+                it.selected = !it.selected;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_search(app: &mut App, code: KeyCode) {
+    let len = app.search_results.len();
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Main,
+        KeyCode::Enter => app.mode = Mode::Main,
+        KeyCode::Char('/') | KeyCode::Char('i') => {
+            app.typing = true;
+            app.status = "Editando busqueda...".into();
+        }
+        KeyCode::Tab => {
+            app.search_source = match app.search_source {
+                Source::Official => Source::Aur,
+                Source::Aur => Source::Official,
+            };
+            app.typing = true;
+            app.status = format!(
+                "Fuente: {}. Escribe y Enter para buscar.",
+                source_label(app.search_source)
+            );
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if len > 0 {
+                app.list_cursor = (app.list_cursor + len - 1) % len;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if len > 0 {
+                app.list_cursor = (app.list_cursor + 1) % len;
+            }
+        }
+        KeyCode::Char(' ') => {
+            if let Some(res) = app.search_results.get(app.list_cursor).cloned() {
+                let target = match app.search_source {
+                    Source::Official => &mut app.official,
+                    Source::Aur => &mut app.aur,
+                };
+                let now_on = toggle_into(target, &res.name, &res.description);
+                if let Some(r) = app.search_results.get_mut(app.list_cursor) {
+                    r.selected = now_on;
+                }
+                app.status = if now_on {
+                    format!("Anadido: {}", res.name)
+                } else {
+                    format!("Quitado: {}", res.name)
+                };
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_load_profile(app: &mut App, code: KeyCode) {
+    let len = app.profiles.len();
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Main,
+        KeyCode::Up | KeyCode::Char('k') => {
+            if len > 0 {
+                app.list_cursor = (app.list_cursor + len - 1) % len;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if len > 0 {
+                app.list_cursor = (app.list_cursor + 1) % len;
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(name) = app.profiles.get(app.list_cursor).cloned() {
+                match profile::load(&name) {
+                    Ok(p) => app.apply_profile(p),
+                    Err(e) => app.status = format!("No se pudo cargar: {e}"),
+                }
+            }
+            app.mode = Mode::Main;
+        }
+        _ => {}
+    }
+}
+
+fn source_label(s: Source) -> &'static str {
     match s {
-        Screen::Welcome => Screen::Welcome,
-        Screen::DesktopEnv => Screen::Welcome,
-        Screen::Official => Screen::DesktopEnv,
-        Screen::Aur => Screen::Official,
-        Screen::Review => Screen::Aur,
+        Source::Official => "Oficial (pacman)",
+        Source::Aur => "AUR (yay)",
     }
 }
 
@@ -248,118 +506,187 @@ fn prev_screen(s: Screen) -> Screen {
 
 fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::vertical([
-        Constraint::Length(3), // titulo
-        Constraint::Min(5),    // cuerpo
-        Constraint::Length(3), // ayuda
+        Constraint::Length(3),
+        Constraint::Min(5),
+        Constraint::Length(3),
     ])
     .split(f.area());
 
-    draw_title(f, chunks[0], app);
-    match app.screen {
-        Screen::Welcome => draw_welcome(f, chunks[1]),
-        Screen::DesktopEnv => draw_desktop_env(f, chunks[1], app),
-        Screen::Official => draw_packages(f, chunks[1], app, Source::Official, "Paquetes oficiales (pacman)"),
-        Screen::Aur => draw_packages(f, chunks[1], app, Source::Aur, "Paquetes del AUR (yay)"),
-        Screen::Review => draw_review(f, chunks[1], app),
+    draw_title(f, chunks[0]);
+    match app.mode {
+        Mode::Main => draw_main(f, chunks[1], app),
+        Mode::Desktop => draw_desktop(f, chunks[1], app),
+        Mode::Official => draw_packages(f, chunks[1], app, Source::Official),
+        Mode::Aur => draw_packages(f, chunks[1], app, Source::Aur),
+        Mode::Search => draw_search(f, chunks[1], app),
+        Mode::LoadProfile => draw_load_profile(f, chunks[1], app),
+        Mode::SaveProfile => draw_save_profile(f, chunks[1], app),
     }
-    draw_help(f, chunks[2], app);
+    draw_status(f, chunks[2], app);
 }
 
-fn draw_title(f: &mut Frame, area: Rect, app: &App) {
-    let step = match app.screen {
-        Screen::Welcome => "Bienvenida",
-        Screen::DesktopEnv => "Paso 1/4 · Entorno de escritorio",
-        Screen::Official => "Paso 2/4 · Paquetes oficiales",
-        Screen::Aur => "Paso 3/4 · Paquetes AUR",
-        Screen::Review => "Paso 4/4 · Revision",
-    };
+fn draw_title(f: &mut Frame, area: Rect) {
     let title = Paragraph::new(Line::from(vec![
-        Span::styled("  Arch Post-Install  ", Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::raw("  "),
-        Span::styled(step, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "  Arch Post-Install  ",
+            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  asistente de post-instalacion (estilo archinstall)"),
     ]))
     .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)));
     f.render_widget(title, area);
 }
 
-fn draw_welcome(f: &mut Frame, area: Rect) {
-    let text = vec![
-        Line::from(""),
-        Line::from("Asistente de post-instalacion para Arch Linux.").bold(),
-        Line::from(""),
-        Line::from("Te guiare para elegir tu entorno de escritorio y los paquetes"),
-        Line::from("que quieras instalar (oficiales y del AUR). Podras guardar tu"),
-        Line::from("seleccion como un perfil reutilizable."),
-        Line::from(""),
-        Line::from(vec![
-            Span::raw("No corras este programa como "),
-            Span::styled("root", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-            Span::raw("; se pedira contrasena con sudo cuando haga falta."),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Enter", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-            Span::raw(" para comenzar  ·  "),
-            Span::styled("q", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-            Span::raw(" para salir"),
-        ]),
+fn draw_main(f: &mut Frame, area: Rect, app: &App) {
+    let de = &DESKTOP_ENVIRONMENTS[app.de_index];
+    let off = App::count_selected(&app.official);
+    let aur = App::count_selected(&app.aur);
+
+    let summaries = [
+        format!("[ {} ]", de.label),
+        format!("[ {off} seleccionados ]"),
+        format!("[ {aur} seleccionados ]"),
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
     ];
-    let p = Paragraph::new(text)
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true })
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(p, area);
+
+    let items: Vec<ListItem> = MENU
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let mut spans = vec![Span::styled(
+                format!("{label:<42}"),
+                Style::default().add_modifier(Modifier::BOLD),
+            )];
+            if !summaries[i].is_empty() {
+                spans.push(Span::styled(summaries[i].clone(), Style::default().fg(Color::Green)));
+            }
+            if i == 6 {
+                spans = vec![Span::styled(
+                    format!("▶ {label}"),
+                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                )];
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    render_list(f, area, items, app.main_cursor, " Menu principal ");
 }
 
-fn draw_desktop_env(f: &mut Frame, area: Rect, app: &App) {
+fn draw_desktop(f: &mut Frame, area: Rect, app: &App) {
     let items: Vec<ListItem> = DESKTOP_ENVIRONMENTS
         .iter()
         .enumerate()
         .map(|(i, de)| {
             let marker = if i == app.de_index { "(•) " } else { "( ) " };
-            let line = Line::from(vec![
+            ListItem::new(Line::from(vec![
                 Span::styled(marker, Style::default().fg(Color::Green)),
                 Span::styled(de.label, Style::default().add_modifier(Modifier::BOLD)),
-            ]);
-            ListItem::new(line)
+            ]))
         })
         .collect();
-
-    render_list(f, area, items, app.cursor, "Elige UN entorno (Space/Enter para fijar)");
+    render_list(f, area, items, app.list_cursor, " Entorno de escritorio (Space/Enter elige) ");
 }
 
-fn draw_packages(f: &mut Frame, area: Rect, app: &App, source: Source, title: &str) {
-    let idxs = app.indices_for(source);
-    let items: Vec<ListItem> = idxs
+fn draw_packages(f: &mut Frame, area: Rect, app: &App, source: Source) {
+    let list = match source {
+        Source::Official => &app.official,
+        Source::Aur => &app.aur,
+    };
+    let items: Vec<ListItem> = list
         .iter()
-        .map(|&i| {
-            let pkg = &EXTRA_PACKAGES[i];
-            let checkbox = if app.selected[i] { "[x] " } else { "[ ] " };
-            let cb_style = if app.selected[i] {
-                Style::default().fg(Color::Green)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            let line = Line::from(vec![
-                Span::styled(checkbox, cb_style),
-                Span::styled(format!("{:<26}", pkg.name), Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(pkg.description, Style::default().fg(Color::Gray)),
-            ]);
-            ListItem::new(line)
-        })
+        .map(|p| package_item(p))
         .collect();
+    let title = match source {
+        Source::Official => " Paquetes oficiales (Space marca) ",
+        Source::Aur => " Paquetes AUR (Space marca) ",
+    };
+    render_list(f, area, items, app.list_cursor, title);
+}
 
-    render_list(f, area, items, app.cursor, title);
+fn package_item(p: &PkgItem) -> ListItem<'_> {
+    let checkbox = if p.selected { "[x] " } else { "[ ] " };
+    let cb_style = if p.selected {
+        Style::default().fg(Color::Green)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    ListItem::new(Line::from(vec![
+        Span::styled(checkbox, cb_style),
+        Span::styled(format!("{:<28}", p.name), Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(truncate(&p.description, 60), Style::default().fg(Color::Gray)),
+    ]))
+}
+
+fn draw_search(f: &mut Frame, area: Rect, app: &App) {
+    let rows = Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).split(area);
+
+    let cursor = if app.typing { "_" } else { "" };
+    let input = Paragraph::new(Line::from(vec![
+        Span::styled(format!(" [{}] ", source_label(app.search_source)), Style::default().fg(Color::Yellow)),
+        Span::raw("Buscar: "),
+        Span::styled(
+            format!("{}{cursor}", app.search_input),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .block(Block::default().borders(Borders::ALL).title(" Buscador en vivo (Tab cambia fuente) "));
+    f.render_widget(input, rows[0]);
+
+    let items: Vec<ListItem> = app.search_results.iter().map(|p| package_item(p)).collect();
+    if items.is_empty() {
+        let hint = Paragraph::new("Sin resultados todavia. Escribe un termino y pulsa Enter.")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL));
+        f.render_widget(hint, rows[1]);
+    } else {
+        render_list(f, rows[1], items, app.list_cursor, " Resultados (Space anade/quita) ");
+    }
+}
+
+fn draw_load_profile(f: &mut Frame, area: Rect, app: &App) {
+    if app.profiles.is_empty() {
+        let p = Paragraph::new("No hay perfiles guardados.\n\nUsa 'Guardar perfil' en el menu para crear uno.")
+            .wrap(Wrap { trim: true })
+            .block(Block::default().borders(Borders::ALL).title(" Cargar perfil "));
+        f.render_widget(p, area);
+        return;
+    }
+    let items: Vec<ListItem> = app
+        .profiles
+        .iter()
+        .map(|n| ListItem::new(Line::from(Span::styled(n.clone(), Style::default().add_modifier(Modifier::BOLD)))))
+        .collect();
+    render_list(f, area, items, app.list_cursor, " Cargar perfil (Enter aplica) ");
+}
+
+fn draw_save_profile(f: &mut Frame, area: Rect, app: &App) {
+    let p = Paragraph::new(vec![
+        Line::from(""),
+        Line::from("Nombre del perfil:").bold(),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("{}_", app.name_input),
+                Style::default().fg(Color::Black).bg(Color::Yellow),
+            ),
+        ]),
+        Line::from(""),
+        Line::from("Enter para guardar · Esc para cancelar").fg(Color::DarkGray),
+    ])
+    .block(Block::default().borders(Borders::ALL).title(" Guardar perfil "));
+    f.render_widget(p, area);
 }
 
 fn render_list(f: &mut Frame, area: Rect, items: Vec<ListItem>, cursor: usize, title: &str) {
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(format!(" {title} ")))
+        .block(Block::default().borders(Borders::ALL).title(title.to_string()))
         .highlight_style(
-            Style::default()
-                .bg(Color::Cyan)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
+            Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("➤ ");
     let mut state = ListState::default();
@@ -367,101 +694,29 @@ fn render_list(f: &mut Frame, area: Rect, items: Vec<ListItem>, cursor: usize, t
     f.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_review(f: &mut Frame, area: Rect, app: &App) {
-    let plan = app.build_plan();
-    let de = &DESKTOP_ENVIRONMENTS[app.de_index];
-
-    let mut lines = vec![
-        Line::from(vec![
-            Span::raw("Entorno: "),
-            Span::styled(de.label, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(vec![
-            Span::raw("Display manager: "),
-            Span::styled(
-                plan.display_manager.clone().unwrap_or_else(|| "ninguno".into()),
-                Style::default().fg(Color::Cyan),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                format!("Oficiales ({}): ", plan.official.len()),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(truncate_list(&plan.official), Style::default().fg(Color::Gray)),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                format!("AUR ({}): ", plan.aur.len()),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(truncate_list(&plan.aur), Style::default().fg(Color::Gray)),
-        ]),
-        Line::from(""),
-    ];
-
-    // Linea de guardado de perfil.
-    let save_box = if app.save_profile { "[x]" } else { "[ ]" };
-    lines.push(Line::from(vec![
-        Span::styled(format!("{save_box} "), Style::default().fg(Color::Green)),
-        Span::raw("Guardar como perfil  "),
-        Span::styled("(s)", Style::default().fg(Color::DarkGray)),
-    ]));
-    if app.save_profile {
-        let name_display = if app.profile_name.is_empty() {
-            "<sin nombre>".to_string()
-        } else {
-            app.profile_name.clone()
-        };
-        let name_style = if app.editing_name {
-            Style::default().fg(Color::Black).bg(Color::Yellow)
-        } else {
-            Style::default().fg(Color::Yellow)
-        };
-        lines.push(Line::from(vec![
-            Span::raw("    Nombre: "),
-            Span::styled(name_display, name_style),
-            Span::raw("  "),
-            Span::styled("(n para editar)", Style::default().fg(Color::DarkGray)),
-        ]));
-    }
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("Enter", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        Span::raw(" para confirmar e instalar."),
-    ]));
-
-    let p = Paragraph::new(lines)
-        .wrap(Wrap { trim: true })
-        .block(Block::default().borders(Borders::ALL).title(" Revision "));
-    f.render_widget(p, area);
-}
-
-fn truncate_list(items: &[String]) -> String {
-    if items.is_empty() {
-        return "(ninguno)".to_string();
-    }
-    let joined = items.join(", ");
-    if joined.len() > 200 {
-        format!("{}…", &joined[..200])
-    } else {
-        joined
-    }
-}
-
-fn draw_help(f: &mut Frame, area: Rect, app: &App) {
-    let help = match app.screen {
-        Screen::Welcome => "Enter: comenzar · q: salir",
-        Screen::DesktopEnv => "↑/↓: mover · Space/Enter: elegir · q: atras",
-        Screen::Official | Screen::Aur => "↑/↓: mover · Space: marcar · Enter: siguiente · q: atras",
-        Screen::Review => "s: guardar perfil · n: nombre · Enter: instalar · q: atras",
+fn draw_status(f: &mut Frame, area: Rect, app: &App) {
+    let help = match app.mode {
+        Mode::Main => "↑/↓: mover · Enter: abrir · q: salir",
+        Mode::Search => "Tab: fuente · i: editar · Space: anadir · Enter: volver · q: menu",
+        Mode::LoadProfile => "↑/↓: mover · Enter: cargar · q: menu",
+        Mode::SaveProfile => "Escribe el nombre · Enter: guardar · Esc: cancelar",
+        _ => "↑/↓: mover · Space: marcar · q: volver al menu",
     };
-    let p = Paragraph::new(Line::from(Span::styled(
-        help,
-        Style::default().fg(Color::DarkGray),
-    )))
-    .alignment(Alignment::Center)
-    .block(Block::default().borders(Borders::ALL));
+    let text = vec![
+        Line::from(Span::styled(app.status.clone(), Style::default().fg(Color::Yellow))),
+        Line::from(Span::styled(help, Style::default().fg(Color::DarkGray))),
+    ];
+    let p = Paragraph::new(text)
+        .alignment(Alignment::Left)
+        .block(Block::default().borders(Borders::ALL));
     f.render_widget(p, area);
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() > max {
+        let t: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{t}…")
+    } else {
+        s.to_string()
+    }
 }

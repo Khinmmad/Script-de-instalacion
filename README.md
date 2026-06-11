@@ -11,15 +11,22 @@ deja un log de todo lo que se instaló.
 
 ## Características
 
-- 🖥️ **Asistente TUI interactivo** (ratatui): navega con flechas, marca paquetes
-  con la barra espaciadora.
-- 📦 **Selección interactiva de paquetes**: oficiales y del AUR, no listas fijas.
+- 🖥️ **Menú estilo `archinstall`**: una pantalla principal navegable por teclado
+  desde la que configuras cada sección y luego pulsas "Instalar ahora".
+- 🔎 **Buscador en vivo de cualquier paquete**: busca en los **repositorios
+  oficiales** y en el **AUR** usando sus APIs oficiales y añade lo que quieras,
+  no estás limitado a una lista fija (como hacen `yay`/`paru`).
+- 📦 **Selección interactiva de paquetes** oficiales y del AUR con checklist.
 - 🎨 **Entornos de escritorio**: KDE Plasma, GNOME, Hyprland, Qtile o ninguno.
 - 🤖 **Instalación automática de `yay`**: lo compila desde el AUR si no está.
 - 🛡️ **Manejo robusto de errores**: los paquetes se instalan uno por uno, así un
   fallo no aborta el resto. Al final ves un resumen de éxitos y fallos.
 - 📝 **Log con marca de tiempo** en `~/.local/state/arch-postinstall/`.
-- 💾 **Perfiles guardables/cargables** para reproducir tu setup en otra máquina.
+- 💾 **Perfiles guardables/cargables** desde el propio menú, para reproducir tu
+  setup en otra máquina.
+
+> El buscador necesita conexión a internet (consulta `archlinux.org` y
+> `aur.archlinux.org`). El resto del catálogo curado funciona sin buscar.
 
 ## Pasos para usarlo (sin compilar) ⚡
 
@@ -94,11 +101,18 @@ cargo build --release
 ### Asistente interactivo (por defecto)
 
 ```bash
-./target/release/arch-postinstall
+arch-postinstall
 ```
 
-Te guía por 4 pasos: entorno de escritorio → paquetes oficiales → paquetes AUR →
-revisión. En la revisión puedes marcar **guardar como perfil**.
+Se abre un **menú principal** (estilo `archinstall`). Desde ahí entras a cada
+sección, la configuras y vuelves al menú:
+
+- **Entorno de escritorio** — elige uno (KDE, GNOME, Hyprland, Qtile o ninguno).
+- **Paquetes oficiales / Paquetes AUR** — marca/desmarca con la barra espaciadora.
+- **Buscar y añadir paquetes** — busca en vivo en los repos oficiales o el AUR
+  (Tab cambia la fuente) y añade cualquier paquete a tu selección.
+- **Cargar / Guardar perfil** — gestiona tus perfiles sin salir del programa.
+- **Instalar ahora** — aplica todo.
 
 > No lo corras como `root`. El programa usa `sudo` cuando hace falta.
 
@@ -123,14 +137,14 @@ arch-postinstall --help
 
 ### Controles de la TUI
 
-| Tecla            | Acción                                  |
-| ---------------- | --------------------------------------- |
-| `↑`/`↓` o `k`/`j`| Mover el cursor                         |
-| `Espacio`        | Marcar/desmarcar paquete o entorno      |
-| `Enter`          | Siguiente paso / confirmar              |
-| `q` o `Esc`      | Retroceder un paso / salir              |
-| `s`              | (Revisión) activar guardar perfil       |
-| `n`              | (Revisión) editar el nombre del perfil  |
+| Tecla             | Acción                                            |
+| ----------------- | ------------------------------------------------- |
+| `↑`/`↓` o `k`/`j` | Mover el cursor                                   |
+| `Enter`           | Abrir sección / confirmar / "Instalar ahora"      |
+| `Espacio`         | Marcar/desmarcar paquete o entorno                |
+| `q` o `Esc`       | Volver al menú (o salir desde el menú)            |
+| `Tab`             | (Buscador) cambiar entre repos oficiales y AUR    |
+| `i` o `/`         | (Buscador) editar el término de búsqueda          |
 
 ## Estructura del proyecto
 
@@ -139,8 +153,9 @@ Script-de-instalacion/
 ├── Cargo.toml
 └── src/
     ├── main.rs       # CLI, orquestación y argumentos
-    ├── tui.rs        # Asistente interactivo (ratatui)
-    ├── catalog.rs    # Catálogo de paquetes y entornos
+    ├── tui.rs        # Menú interactivo estilo archinstall (ratatui)
+    ├── repo_api.rs   # Buscador en vivo (APIs oficiales + AUR)
+    ├── catalog.rs    # Catálogo curado de paquetes y entornos
     ├── model.rs      # Estructuras de datos y perfiles
     ├── profile.rs    # Guardar/cargar perfiles (TOML)
     └── installer.rs  # Ejecución (pacman/yay), logging y resumen

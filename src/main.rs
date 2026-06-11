@@ -5,6 +5,7 @@ mod catalog;
 mod installer;
 mod model;
 mod profile;
+mod repo_api;
 mod tui;
 
 use std::process::ExitCode;
