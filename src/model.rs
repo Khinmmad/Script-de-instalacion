@@ -65,11 +65,24 @@ pub struct InstallPlan {
     pub services: Vec<String>,
     /// Servicios de usuario a habilitar (stack de audio PipeWire).
     pub user_services: Vec<String>,
+    /// Locale a generar y fijar (ej. "es_MX.UTF-8"). None = no tocar.
+    pub locale: Option<String>,
+    /// Zona horaria (ej. "America/Mexico_City"). None = no tocar.
+    pub timezone: Option<String>,
+    /// Distribucion de teclado de consola (ej. "la-latin1"). None = no tocar.
+    pub keymap: Option<String>,
+    /// Hostname del equipo. None = no tocar.
+    pub hostname: Option<String>,
+    /// Habilitar el repositorio [multilib] (Steam, libs de 32 bits).
+    pub enable_multilib: bool,
+    /// Reiniciar automaticamente al terminar.
+    pub reboot_after: bool,
 }
 
 impl InstallPlan {
     /// Construye un plan derivando automaticamente los servicios a habilitar
-    /// a partir de los paquetes elegidos y el display manager.
+    /// a partir de los paquetes elegidos y el display manager. Los ajustes del
+    /// sistema (locale, zona horaria, etc.) quedan vacios; el llamador los fija.
     pub fn new(
         desktop_env_id: Option<String>,
         display_manager: Option<String>,
@@ -84,11 +97,40 @@ impl InstallPlan {
             aur,
             services,
             user_services,
+            locale: None,
+            timezone: None,
+            keymap: None,
+            hostname: None,
+            enable_multilib: false,
+            reboot_after: false,
         }
     }
 
     pub fn is_empty(&self) -> bool {
         self.official.is_empty() && self.aur.is_empty()
+    }
+
+    /// True si hay paquete de microcodigo de CPU en el plan.
+    pub fn has_microcode(&self) -> bool {
+        self.official
+            .iter()
+            .any(|p| p == "intel-ucode" || p == "amd-ucode")
+    }
+
+    /// True si el plan instala el driver propietario de NVIDIA.
+    pub fn has_nvidia(&self) -> bool {
+        self.official
+            .iter()
+            .any(|p| p == "nvidia" || p == "nvidia-open")
+    }
+
+    /// Parametros de kernel que requieren los drivers elegidos.
+    pub fn kernel_params(&self) -> Vec<String> {
+        let mut params = Vec::new();
+        if self.has_nvidia() {
+            params.push("nvidia-drm.modeset=1".to_string());
+        }
+        params
     }
 }
 
@@ -236,5 +278,26 @@ mod tests {
         let plan = InstallPlan::new(None, None, vec!["firefox".into()], vec![]);
         assert!(plan.services.is_empty());
         assert!(plan.user_services.is_empty());
+    }
+
+    #[test]
+    fn detects_microcode_and_nvidia() {
+        let plan = InstallPlan::new(
+            None,
+            None,
+            vec!["nvidia".into(), "intel-ucode".into()],
+            vec![],
+        );
+        assert!(plan.has_microcode());
+        assert!(plan.has_nvidia());
+        assert_eq!(
+            plan.kernel_params(),
+            vec!["nvidia-drm.modeset=1".to_string()]
+        );
+
+        let plain = InstallPlan::new(None, None, vec!["firefox".into()], vec![]);
+        assert!(!plain.has_microcode());
+        assert!(!plain.has_nvidia());
+        assert!(plain.kernel_params().is_empty());
     }
 }
