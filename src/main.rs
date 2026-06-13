@@ -7,6 +7,7 @@ mod model;
 mod profile;
 mod repo_api;
 mod tui;
+mod validate;
 
 use std::process::ExitCode;
 

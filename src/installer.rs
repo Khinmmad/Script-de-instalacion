@@ -210,11 +210,129 @@ fn detect_bootloader() -> Bootloader {
     }
 }
 
-/// Escribe contenido en un archivo de sistema (via sudo). El contenido se
-/// controla internamente (locale, hostname...) y no lleva comillas simples.
+/// Genera un nombre de archivo temporal unico bajo /tmp.
+fn temp_path(prefix: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("/tmp/arch-postinstall-{prefix}-{}-{n}", std::process::id())
+}
+
+/// Escribe `content` en un archivo del sistema (vía sudo). Usa un archivo
+/// temporal como intermediario para que el contenido nunca pase por una
+/// shell: asi es seguro aunque contenga comillas, `$`, espacios o saltos de
+/// linea.
 fn write_root_file(log: &mut Logger, opts: &InstallOptions, path: &str, content: &str) -> bool {
-    let cmd = format!("printf '%s\\n' '{content}' > {path}");
-    run(log, opts, "sudo", &["bash", "-c", &cmd])
+    if opts.dry_run {
+        log.log(&format!(
+            "[dry-run] escribir {} bytes en {path}",
+            content.len()
+        ));
+        return true;
+    }
+
+    let tmp = temp_path("write");
+    if let Err(e) = fs::write(&tmp, content) {
+        log.log(&format!("  ! no se pudo escribir {tmp}: {e}"));
+        return false;
+    }
+
+    let ok = run(log, opts, "sudo", &["install", "-m", "0644", &tmp, path]);
+    let _ = fs::remove_file(&tmp);
+    ok
+}
+
+/// Descomenta la linea `#<loc> ...` en `/etc/locale.gen` y luego lo deja
+/// escrito en disco. Lo hace editando el archivo en Rust y copiandolo con
+/// sudo, en vez de pasar el `loc` por `sed` (donde una barra o un caracter
+/// especial romperia la expresion).
+fn uncomment_locale_gen(log: &mut Logger, opts: &InstallOptions, loc: &str) -> bool {
+    if opts.dry_run {
+        log.log(&format!("[dry-run] descomentar {loc} en /etc/locale.gen"));
+        return true;
+    }
+
+    const PATH: &str = "/etc/locale.gen";
+    let body = match fs::read_to_string(PATH) {
+        Ok(s) => s,
+        Err(e) => {
+            log.log(&format!("  ! no se pudo leer {PATH}: {e}"));
+            return false;
+        }
+    };
+
+    let target_prefix = format!("#{loc} ");
+    let mut changed = false;
+    let new_body: String = body
+        .lines()
+        .map(|l| {
+            if !changed && l.starts_with(&target_prefix) {
+                changed = true;
+                &l[1..]
+            } else {
+                l
+            }
+        })
+        .collect::<Vec<&str>>()
+        .join("\n");
+    let new_body = if body.ends_with('\n') && !new_body.ends_with('\n') {
+        format!("{new_body}\n")
+    } else {
+        new_body
+    };
+
+    if !changed {
+        // La linea no estaba comentada o no existe; en cualquier caso no hay
+        // que modificar el archivo (locale-gen es lo que detecta si el locale
+        // esta disponible, asi que dejar el archivo como esta es correcto).
+        log.log(&format!(
+            "  /etc/locale.gen: linea para {loc} no estaba comentada"
+        ));
+        return true;
+    }
+
+    let tmp = temp_path("locale-gen");
+    if let Err(e) = fs::write(&tmp, &new_body) {
+        log.log(&format!("  ! no se pudo escribir {tmp}: {e}"));
+        return false;
+    }
+    let ok = run(log, opts, "sudo", &["install", "-m", "0644", &tmp, PATH]);
+    let _ = fs::remove_file(&tmp);
+    ok
+}
+
+/// Anade `line` al final de `/etc/hosts` (vía sudo), si no contiene ya el
+/// hostname. Lee el archivo en Rust para hacer la comprobacion y usa un
+/// archivo temporal para que el contenido nunca pase por una shell.
+fn append_to_hosts(log: &mut Logger, opts: &InstallOptions, host: &str, line: &str) -> bool {
+    if opts.dry_run {
+        log.log(&format!(
+            "[dry-run] anadir '{line}' a /etc/hosts si no existe"
+        ));
+        return true;
+    }
+
+    let already = fs::read_to_string("/etc/hosts")
+        .map(|s| s.contains(host))
+        .unwrap_or(false);
+    if already {
+        log.log(&format!("  /etc/hosts ya contiene entrada para {host}"));
+        return true;
+    }
+
+    let tmp = temp_path("hosts");
+    if let Err(e) = fs::write(&tmp, line) {
+        log.log(&format!("  ! no se pudo escribir {tmp}: {e}"));
+        return false;
+    }
+
+    // tmp es una ruta controlada por nosotros (no viene del usuario), asi que
+    // es seguro expandirla en bash. El contenido va por el archivo, no por
+    // la linea de comandos.
+    let cmd = format!("cat {tmp} >> /etc/hosts");
+    let ok = run(log, opts, "sudo", &["bash", "-c", &cmd]);
+    let _ = fs::remove_file(&tmp);
+    ok
 }
 
 /// Activa el repositorio [multilib] descomentando su bloque en pacman.conf.
@@ -257,9 +375,7 @@ fn configure_system_basics(
 
     if let Some(loc) = &plan.locale {
         // Descomenta la linea del locale, lo genera y fija LANG.
-        let sed = format!("/^#{loc} /s/^#//");
-        let gen = run(log, opts, "sudo", &["sed", "-i", &sed, "/etc/locale.gen"])
-            && run(log, opts, "sudo", &["locale-gen"]);
+        let gen = uncomment_locale_gen(log, opts, loc) && run(log, opts, "sudo", &["locale-gen"]);
         let write = write_root_file(log, opts, "/etc/locale.conf", &format!("LANG={loc}"));
         results.push(StepResult {
             label: format!("locale {loc}"),
@@ -277,10 +393,8 @@ fn configure_system_basics(
 
     if let Some(host) = &plan.hostname {
         let ok = write_root_file(log, opts, "/etc/hostname", host);
-        // Anade la entrada a /etc/hosts si no esta ya.
-        let line = format!("127.0.1.1 {host}.localdomain {host}");
-        let cmd = format!("grep -q '{host}' /etc/hosts || printf '%s\\n' '{line}' >> /etc/hosts");
-        let hosts_ok = run(log, opts, "sudo", &["bash", "-c", &cmd]);
+        let line = format!("127.0.1.1 {host}.localdomain {host}\n");
+        let hosts_ok = append_to_hosts(log, opts, host, &line);
         results.push(StepResult {
             label: format!("hostname {host}"),
             ok: ok && hosts_ok,

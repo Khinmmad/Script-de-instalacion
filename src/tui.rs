@@ -14,7 +14,7 @@ use ratatui::{
 
 use crate::catalog::{BASE_PACKAGES, DESKTOP_ENVIRONMENTS, DRIVERS, EXTRA_PACKAGES};
 use crate::model::{InstallPlan, Profile, Source};
-use crate::{profile, repo_api};
+use crate::{profile, repo_api, validate};
 
 /// Un paquete seleccionable (curado o anadido por busqueda).
 #[derive(Clone)]
@@ -210,10 +210,10 @@ impl App {
             de.display_manager.map(|s| s.to_string())
         };
         let mut plan = InstallPlan::new(de_id, dm, official, aur);
-        plan.locale = nonempty(&self.sys_locale);
-        plan.timezone = nonempty(&self.sys_timezone);
-        plan.keymap = nonempty(&self.sys_keymap);
-        plan.hostname = nonempty(&self.sys_hostname);
+        plan.locale = nonempty(&self.sys_locale).filter(|s| validate::is_valid_locale(s));
+        plan.timezone = nonempty(&self.sys_timezone).filter(|s| validate::is_valid_timezone(s));
+        plan.keymap = nonempty(&self.sys_keymap).filter(|s| validate::is_valid_keymap(s));
+        plan.hostname = nonempty(&self.sys_hostname).filter(|s| validate::is_valid_hostname(s));
         plan.enable_multilib = self.sys_multilib;
         plan.reboot_after = self.sys_reboot;
         plan
@@ -461,9 +461,33 @@ fn handle_text_submit(app: &mut App) {
             app.mode = Mode::Main;
         }
         Mode::System => {
-            // Confirmar la edicion de un campo: solo salimos del modo texto.
+            // Confirmar la edicion de un campo: salimos del modo texto y, si
+            // el valor quedo invalido, avisamos al usuario.
             app.typing = false;
-            app.status = "Campo guardado.".into();
+            let (label, valid) = match app.sys_cursor {
+                0 => ("locale", validate::is_valid_locale(&app.sys_locale)),
+                1 => (
+                    "zona horaria",
+                    validate::is_valid_timezone(&app.sys_timezone),
+                ),
+                2 => ("teclado", validate::is_valid_keymap(&app.sys_keymap)),
+                3 => ("hostname", validate::is_valid_hostname(&app.sys_hostname)),
+                _ => ("", true),
+            };
+            let value = match app.sys_cursor {
+                0 => &app.sys_locale,
+                1 => &app.sys_timezone,
+                2 => &app.sys_keymap,
+                3 => &app.sys_hostname,
+                _ => "",
+            };
+            app.status = if value.is_empty() {
+                "Campo vacio: no se modificara ese ajuste.".into()
+            } else if !valid {
+                format!("'{value}' no es un {label} valido; se omitira al instalar.")
+            } else {
+                "Campo guardado.".into()
+            };
         }
         _ => {}
     }
