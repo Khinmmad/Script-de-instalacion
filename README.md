@@ -24,6 +24,13 @@ deja un log de todo lo que se instaló.
   automáticamente los servicios — el **display manager** correcto (sddm/gdm/
   lightdm), **NetworkManager**, **Bluetooth** y el **audio** (PipeWire). Arrancas
   y ya estás en tu escritorio.
+- 🧩 **Configuración del sistema**: locale, zona horaria, teclado de consola,
+  hostname y el repositorio **multilib** (Steam / libs de 32 bits), todo opcional.
+- 🚀 **Arranque correcto de drivers**: el **microcódigo** de CPU y el parámetro
+  `nvidia-drm.modeset=1` se cablean al bootloader. En **GRUB** se hace solo
+  (`grub-mkconfig`); en **systemd-boot** se imprimen las instrucciones exactas
+  (no se editan las entradas de arranque a ciegas, por seguridad).
+- 🔁 **Reinicio opcional** al terminar para dejar todo aplicado.
 - 🤖 **Instalación automática de `yay`**: lo compila desde el AUR si no está.
 - 🛡️ **Manejo robusto de errores**: los paquetes se instalan uno por uno, así un
   fallo no aborta el resto. Al final ves un resumen de éxitos y fallos.
@@ -85,6 +92,9 @@ configuras y vuelves al menú:
 - **Controladores (drivers)** — marca tu GPU y el microcódigo de tu CPU; puedes
   elegir varios (p. ej. Intel + NVIDIA en portátiles híbridos).
 - **Paquetes oficiales / Paquetes AUR** — marca/desmarca con la barra espaciadora.
+- **Configuración del sistema** — formulario con locale, zona horaria, teclado,
+  hostname, y toggles para multilib y reinicio automático (deja un campo vacío
+  para no tocar ese ajuste).
 - **Buscar y añadir paquetes** — busca en vivo en los repos oficiales o el AUR
   (Tab cambia la fuente) y añade cualquier paquete a tu selección.
 - **Cargar / Guardar perfil** — gestiona tus perfiles sin salir del programa.
@@ -92,10 +102,22 @@ configuras y vuelves al menú:
   (entorno, display manager, paquetes y **servicios que se habilitarán**);
   confirmas con Enter y se instala.
 
-Tras instalar los paquetes, el programa habilita los servicios necesarios con
-`systemctl` para que el equipo arranque listo: el display manager del entorno
-elegido, NetworkManager, Bluetooth (si instalaste `bluez`) y el audio de
-PipeWire. Un paso que falle queda registrado pero no aborta el resto.
+Tras instalar los paquetes, el programa configura el sistema y habilita los
+servicios necesarios con `systemctl` para que el equipo arranque listo: el
+display manager del entorno elegido, NetworkManager, Bluetooth (si instalaste
+`bluez`) y el audio de PipeWire. También aplica los básicos del sistema que
+hayas rellenado (locale, zona horaria, teclado, hostname) y cablea el
+microcódigo / NVIDIA al bootloader. Un paso que falle queda registrado pero no
+aborta el resto.
+
+> **Bootloader:** en **GRUB** el microcódigo y los parámetros de kernel se
+> aplican automáticamente (`grub-mkconfig`). En **systemd-boot** el programa
+> imprime las líneas exactas que debes añadir a tus entradas de arranque, en
+> lugar de editarlas automáticamente (editarlas mal podría dejar el equipo sin
+> bootear).
+
+> **Perfiles:** guardan tu entorno, drivers y paquetes. Los ajustes del sistema
+> (locale, hostname, etc.) son por ejecución y no se guardan en el perfil.
 
 ### Línea de comandos
 

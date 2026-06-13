@@ -115,6 +115,29 @@ fn show_plan(plan: &InstallPlan) {
         svcs.push("audio (PipeWire, --user)".into());
     }
     println!("  Servicios      : {}", join_or_none(&svcs));
+
+    let mut sys = Vec::new();
+    if let Some(v) = &plan.locale {
+        sys.push(format!("locale={v}"));
+    }
+    if let Some(v) = &plan.timezone {
+        sys.push(format!("tz={v}"));
+    }
+    if let Some(v) = &plan.keymap {
+        sys.push(format!("teclado={v}"));
+    }
+    if let Some(v) = &plan.hostname {
+        sys.push(format!("host={v}"));
+    }
+    if plan.enable_multilib {
+        sys.push("multilib".into());
+    }
+    if plan.reboot_after {
+        sys.push("reiniciar".into());
+    }
+    if !sys.is_empty() {
+        println!("  Sistema        : {}", sys.join(", "));
+    }
     println!();
 }
 
@@ -155,6 +178,19 @@ fn run_plan(plan: InstallPlan, cli: &Cli, already_confirmed: bool) -> Result<()>
     log.log(&format!("== arch-postinstall {VERSION} =="));
     let results = installer::execute(&plan, &opts, &mut log);
     installer::print_summary(&results, &mut log);
+
+    if plan.reboot_after {
+        if cli.dry_run {
+            println!("[dry-run] sudo systemctl reboot");
+        } else if cli.yes || confirm("Instalacion terminada. ¿Reiniciar ahora?") {
+            println!("Reiniciando...");
+            let _ = std::process::Command::new("sudo")
+                .args(["systemctl", "reboot"])
+                .status();
+        } else {
+            println!("Recuerda reiniciar para aplicar todos los cambios.");
+        }
+    }
     Ok(())
 }
 
@@ -226,7 +262,7 @@ fn main() -> ExitCode {
                     Err(e) => eprintln!("No se pudo guardar el perfil: {e}"),
                 }
             }
-            if let Err(e) = run_plan(plan, &cli, true) {
+            if let Err(e) = run_plan(*plan, &cli, true) {
                 eprintln!("Error: {e}");
                 return ExitCode::FAILURE;
             }

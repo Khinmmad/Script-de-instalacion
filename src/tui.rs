@@ -32,6 +32,7 @@ enum Mode {
     Drivers,
     Official,
     Aur,
+    System,
     Search,
     LoadProfile,
     SaveProfile,
@@ -42,7 +43,7 @@ enum Mode {
 pub enum Outcome {
     Cancelled,
     Confirmed {
-        plan: InstallPlan,
+        plan: Box<InstallPlan>,
         save_as: Option<String>,
     },
 }
@@ -53,6 +54,7 @@ const MENU: &[&str] = &[
     "Controladores (drivers GPU + microcodigo)",
     "Paquetes oficiales",
     "Paquetes AUR",
+    "Configuracion del sistema (locale, zona, teclado...)",
     "Buscar y anadir paquetes (oficial/AUR)",
     "Cargar perfil",
     "Guardar perfil",
@@ -65,11 +67,17 @@ const MENU_DESKTOP: usize = 0;
 const MENU_DRIVERS: usize = 1;
 const MENU_OFFICIAL: usize = 2;
 const MENU_AUR: usize = 3;
-const MENU_SEARCH: usize = 4;
-const MENU_LOAD: usize = 5;
-const MENU_SAVE: usize = 6;
-const MENU_INSTALL: usize = 7;
-const MENU_QUIT: usize = 8;
+const MENU_SYSTEM: usize = 4;
+const MENU_SEARCH: usize = 5;
+const MENU_LOAD: usize = 6;
+const MENU_SAVE: usize = 7;
+const MENU_INSTALL: usize = 8;
+const MENU_QUIT: usize = 9;
+
+/// Numero de campos en el formulario de configuracion del sistema.
+const SYS_FIELDS: usize = 6;
+const SYS_MULTILIB: usize = 4;
+const SYS_REBOOT: usize = 5;
 
 struct App {
     mode: Mode,
@@ -91,6 +99,15 @@ struct App {
     // Perfiles
     profiles: Vec<String>,
     name_input: String,
+
+    // Configuracion del sistema (formulario)
+    sys_cursor: usize,
+    sys_locale: String,
+    sys_timezone: String,
+    sys_keymap: String,
+    sys_hostname: String,
+    sys_multilib: bool,
+    sys_reboot: bool,
 }
 
 impl App {
@@ -131,6 +148,24 @@ impl App {
             typing: false,
             profiles: Vec::new(),
             name_input: String::new(),
+            sys_cursor: 0,
+            sys_locale: String::new(),
+            sys_timezone: String::new(),
+            sys_keymap: String::new(),
+            sys_hostname: String::new(),
+            sys_multilib: false,
+            sys_reboot: false,
+        }
+    }
+
+    /// Referencia mutable al campo de texto del formulario bajo el cursor.
+    fn sys_field_mut(&mut self) -> Option<&mut String> {
+        match self.sys_cursor {
+            0 => Some(&mut self.sys_locale),
+            1 => Some(&mut self.sys_timezone),
+            2 => Some(&mut self.sys_keymap),
+            3 => Some(&mut self.sys_hostname),
+            _ => None,
         }
     }
 
@@ -174,11 +209,42 @@ impl App {
         } else {
             de.display_manager.map(|s| s.to_string())
         };
-        InstallPlan::new(de_id, dm, official, aur)
+        let mut plan = InstallPlan::new(de_id, dm, official, aur);
+        plan.locale = nonempty(&self.sys_locale);
+        plan.timezone = nonempty(&self.sys_timezone);
+        plan.keymap = nonempty(&self.sys_keymap);
+        plan.hostname = nonempty(&self.sys_hostname);
+        plan.enable_multilib = self.sys_multilib;
+        plan.reboot_after = self.sys_reboot;
+        plan
     }
 
     fn count_drivers(&self) -> usize {
         self.drivers.iter().filter(|&&d| d).count()
+    }
+
+    /// Resumen corto de los ajustes del sistema para el menu principal.
+    fn system_summary(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.sys_locale.trim().is_empty() {
+            parts.push("locale");
+        }
+        if !self.sys_timezone.trim().is_empty() {
+            parts.push("zona");
+        }
+        if !self.sys_keymap.trim().is_empty() {
+            parts.push("teclado");
+        }
+        if !self.sys_hostname.trim().is_empty() {
+            parts.push("hostname");
+        }
+        if self.sys_multilib {
+            parts.push("multilib");
+        }
+        if self.sys_reboot {
+            parts.push("reiniciar");
+        }
+        parts.join(", ")
     }
 
     /// Aplica un perfil cargado a la seleccion actual.
@@ -235,6 +301,16 @@ fn move_cursor(cursor: &mut usize, len: usize, code: KeyCode) {
     }
 }
 
+/// Convierte un campo de texto en Option, recortando espacios.
+fn nonempty(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
 /// Anade o alterna un paquete en una lista por nombre. Devuelve si quedo activo.
 fn toggle_into(vec: &mut Vec<PkgItem>, name: &str, desc: &str) -> bool {
     if let Some(it) = vec.iter_mut().find(|p| p.name == name) {
@@ -274,20 +350,28 @@ pub fn run() -> Result<Outcome> {
                 KeyCode::Enter => {
                     handle_text_submit(&mut app);
                 }
-                KeyCode::Backspace => {
-                    if app.mode == Mode::Search {
+                KeyCode::Backspace => match app.mode {
+                    Mode::Search => {
                         app.search_input.pop();
-                    } else {
+                    }
+                    Mode::System => {
+                        if let Some(f) = app.sys_field_mut() {
+                            f.pop();
+                        }
+                    }
+                    _ => {
                         app.name_input.pop();
                     }
-                }
-                KeyCode::Char(c) => {
-                    if app.mode == Mode::Search {
-                        app.search_input.push(c);
-                    } else {
-                        app.name_input.push(c);
+                },
+                KeyCode::Char(c) => match app.mode {
+                    Mode::Search => app.search_input.push(c),
+                    Mode::System => {
+                        if let Some(f) = app.sys_field_mut() {
+                            f.push(c);
+                        }
                     }
-                }
+                    _ => app.name_input.push(c),
+                },
                 _ => {}
             }
             continue;
@@ -308,13 +392,14 @@ pub fn run() -> Result<Outcome> {
             Mode::Drivers => handle_drivers(&mut app, key.code),
             Mode::Official => handle_packages(&mut app, key.code, Source::Official),
             Mode::Aur => handle_packages(&mut app, key.code, Source::Aur),
+            Mode::System => handle_system(&mut app, key.code),
             Mode::Search => handle_search(&mut app, key.code),
             Mode::LoadProfile => handle_load_profile(&mut app, key.code),
             Mode::SaveProfile => {} // se maneja via typing
             Mode::Review => match key.code {
                 KeyCode::Enter => {
                     break Outcome::Confirmed {
-                        plan: app.build_plan(),
+                        plan: Box::new(app.build_plan()),
                         save_as: None,
                     };
                 }
@@ -375,6 +460,11 @@ fn handle_text_submit(app: &mut App) {
             app.typing = false;
             app.mode = Mode::Main;
         }
+        Mode::System => {
+            // Confirmar la edicion de un campo: solo salimos del modo texto.
+            app.typing = false;
+            app.status = "Campo guardado.".into();
+        }
         _ => {}
     }
 }
@@ -400,6 +490,11 @@ fn handle_main(app: &mut App, code: KeyCode) -> Option<Outcome> {
             MENU_AUR => {
                 app.mode = Mode::Aur;
                 app.list_cursor = 0;
+            }
+            MENU_SYSTEM => {
+                app.mode = Mode::System;
+                app.sys_cursor = 0;
+                app.status = "Rellena lo que quieras configurar (vacio = no tocar).".into();
             }
             MENU_SEARCH => {
                 app.mode = Mode::Search;
@@ -447,6 +542,23 @@ fn handle_desktop(app: &mut App, code: KeyCode) {
             let de = &DESKTOP_ENVIRONMENTS[app.de_index];
             app.status = format!("Entorno: {}", de.label);
             app.mode = Mode::Main;
+        }
+        _ => {}
+    }
+}
+
+fn handle_system(app: &mut App, code: KeyCode) {
+    move_cursor(&mut app.sys_cursor, SYS_FIELDS, code);
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Main,
+        KeyCode::Char(' ') => match app.sys_cursor {
+            SYS_MULTILIB => app.sys_multilib = !app.sys_multilib,
+            SYS_REBOOT => app.sys_reboot = !app.sys_reboot,
+            _ => {}
+        },
+        KeyCode::Enter | KeyCode::Char('i') if app.sys_cursor <= 3 => {
+            app.typing = true;
+            app.status = "Editando campo. Enter confirma, Esc cancela.".into();
         }
         _ => {}
     }
@@ -565,6 +677,7 @@ fn draw(f: &mut Frame, app: &App) {
         Mode::Desktop => draw_desktop(f, chunks[1], app),
         Mode::Official => draw_packages(f, chunks[1], app, Source::Official),
         Mode::Aur => draw_packages(f, chunks[1], app, Source::Aur),
+        Mode::System => draw_system(f, chunks[1], app),
         Mode::Search => draw_search(f, chunks[1], app),
         Mode::LoadProfile => draw_load_profile(f, chunks[1], app),
         Mode::SaveProfile => draw_save_profile(f, chunks[1], app),
@@ -669,6 +782,10 @@ fn draw_main(f: &mut Frame, area: Rect, app: &App) {
     summaries[MENU_DRIVERS] = format!("[ {drv} seleccionados ]");
     summaries[MENU_OFFICIAL] = format!("[ {off} seleccionados ]");
     summaries[MENU_AUR] = format!("[ {aur} seleccionados ]");
+    let sys_summary = app.system_summary();
+    if !sys_summary.is_empty() {
+        summaries[MENU_SYSTEM] = format!("[ {sys_summary} ]");
+    }
 
     let items: Vec<ListItem> = MENU
         .iter()
@@ -697,6 +814,90 @@ fn draw_main(f: &mut Frame, area: Rect, app: &App) {
         .collect();
 
     render_list(f, area, items, app.main_cursor, " Menu principal ");
+}
+
+fn draw_system(f: &mut Frame, area: Rect, app: &App) {
+    // Cada campo de texto: (etiqueta, valor, ejemplo).
+    let fields = [
+        ("Locale", &app.sys_locale, "es_MX.UTF-8"),
+        ("Zona horaria", &app.sys_timezone, "America/Mexico_City"),
+        ("Teclado (consola)", &app.sys_keymap, "la-latin1"),
+        ("Hostname", &app.sys_hostname, "mi-arch"),
+    ];
+
+    let mut lines = vec![Line::from("")];
+    for (i, (label, value, example)) in fields.iter().enumerate() {
+        let focused = app.sys_cursor == i;
+        let editing = focused && app.typing;
+        let prefix = if focused { "➤ " } else { "  " };
+        let shown = if value.is_empty() {
+            Span::styled(format!("<{example}>"), Style::default().fg(Color::DarkGray))
+        } else {
+            Span::styled(
+                (*value).clone(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )
+        };
+        let value_style = if editing {
+            Style::default().fg(Color::Black).bg(Color::Yellow)
+        } else {
+            Style::default()
+        };
+        let cursor = if editing { "_" } else { "" };
+        lines.push(Line::from(vec![
+            Span::styled(prefix, Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!("{label:<20}"),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            shown,
+            Span::styled(cursor.to_string(), value_style),
+        ]));
+    }
+
+    // Toggles.
+    let toggle_line = |idx: usize, label: &str, on: bool, cursor: usize| {
+        let prefix = if cursor == idx { "➤ " } else { "  " };
+        let box_ = if on { "[x]" } else { "[ ]" };
+        Line::from(vec![
+            Span::styled(prefix, Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!("{box_} "),
+                Style::default().fg(if on { Color::Green } else { Color::DarkGray }),
+            ),
+            Span::styled(
+                label.to_string(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ])
+    };
+    lines.push(Line::from(""));
+    lines.push(toggle_line(
+        SYS_MULTILIB,
+        "Habilitar repositorio multilib (Steam, libs 32-bit)",
+        app.sys_multilib,
+        app.sys_cursor,
+    ));
+    lines.push(toggle_line(
+        SYS_REBOOT,
+        "Reiniciar automaticamente al terminar",
+        app.sys_reboot,
+        app.sys_cursor,
+    ));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Deja un campo vacio para no tocar ese ajuste del sistema.",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Configuracion del sistema "),
+    );
+    f.render_widget(p, area);
 }
 
 fn draw_drivers(f: &mut Frame, area: Rect, app: &App) {
@@ -944,6 +1145,38 @@ fn draw_review(f: &mut Frame, area: Rect, app: &App) {
         "  (systemctl enable: el equipo arranca listo para usarse)",
         Style::default().fg(Color::DarkGray),
     )));
+
+    // Ajustes del sistema, si los hay.
+    let mut sys = Vec::new();
+    if let Some(v) = &plan.locale {
+        sys.push(format!("locale={v}"));
+    }
+    if let Some(v) = &plan.timezone {
+        sys.push(format!("zona={v}"));
+    }
+    if let Some(v) = &plan.keymap {
+        sys.push(format!("teclado={v}"));
+    }
+    if let Some(v) = &plan.hostname {
+        sys.push(format!("host={v}"));
+    }
+    if plan.enable_multilib {
+        sys.push("multilib".into());
+    }
+    if plan.reboot_after {
+        sys.push("reiniciar al terminar".into());
+    }
+    if !sys.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  Sistema:  ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(sys.join(", "), Style::default().fg(Color::Gray)),
+        ]));
+    }
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::raw("  "),
@@ -1001,6 +1234,7 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         Mode::Welcome => "Enter: comenzar · q: salir",
         Mode::Main => "↑/↓: mover · Enter: abrir · q: salir",
         Mode::Search => "Tab: fuente · i: editar · Space: anadir · Enter: volver · q: menu",
+        Mode::System => "↑/↓: campo · Enter/i: editar · Space: marcar · q: menu",
         Mode::LoadProfile => "↑/↓: mover · Enter: cargar · q: menu",
         Mode::SaveProfile => "Escribe el nombre · Enter: guardar · Esc: cancelar",
         Mode::Review => "Enter: confirmar e instalar · Esc: volver al menu",

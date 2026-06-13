@@ -190,9 +190,196 @@ fn install_one(log: &mut Logger, opts: &InstallOptions, manager: &str, pkg: &str
     }
 }
 
+/// Bootloader detectado en el sistema.
+enum Bootloader {
+    Grub,
+    SystemdBoot,
+    Unknown,
+}
+
+fn detect_bootloader() -> Bootloader {
+    use std::path::Path;
+    if Path::new("/boot/grub/grub.cfg").exists() || Path::new("/etc/default/grub").exists() {
+        Bootloader::Grub
+    } else if Path::new("/boot/loader/entries").exists()
+        || Path::new("/efi/loader/entries").exists()
+    {
+        Bootloader::SystemdBoot
+    } else {
+        Bootloader::Unknown
+    }
+}
+
+/// Escribe contenido en un archivo de sistema (via sudo). El contenido se
+/// controla internamente (locale, hostname...) y no lleva comillas simples.
+fn write_root_file(log: &mut Logger, opts: &InstallOptions, path: &str, content: &str) -> bool {
+    let cmd = format!("printf '%s\\n' '{content}' > {path}");
+    run(log, opts, "sudo", &["bash", "-c", &cmd])
+}
+
+/// Activa el repositorio [multilib] descomentando su bloque en pacman.conf.
+fn enable_multilib(log: &mut Logger, opts: &InstallOptions) -> StepResult {
+    // Quita el '#' de las dos lineas del bloque [multilib]. Idempotente: si ya
+    // estan descomentadas, no hace nada.
+    let sed = r"/\[multilib\]/,/Include/ s/^#//";
+    let ok = run(log, opts, "sudo", &["sed", "-i", sed, "/etc/pacman.conf"]);
+    StepResult {
+        label: "habilitar multilib".into(),
+        ok,
+    }
+}
+
+/// Aplica los basicos del sistema que se hayan indicado.
+fn configure_system_basics(
+    plan: &InstallPlan,
+    log: &mut Logger,
+    opts: &InstallOptions,
+    results: &mut Vec<StepResult>,
+) {
+    if plan.timezone.is_none()
+        && plan.locale.is_none()
+        && plan.keymap.is_none()
+        && plan.hostname.is_none()
+    {
+        return;
+    }
+    log.log("==> Configurando basicos del sistema");
+
+    if let Some(tz) = &plan.timezone {
+        let target = format!("/usr/share/zoneinfo/{tz}");
+        let ok = run(log, opts, "sudo", &["ln", "-sf", &target, "/etc/localtime"])
+            && run(log, opts, "sudo", &["hwclock", "--systohc"]);
+        results.push(StepResult {
+            label: format!("zona horaria {tz}"),
+            ok,
+        });
+    }
+
+    if let Some(loc) = &plan.locale {
+        // Descomenta la linea del locale, lo genera y fija LANG.
+        let sed = format!("/^#{loc} /s/^#//");
+        let gen = run(log, opts, "sudo", &["sed", "-i", &sed, "/etc/locale.gen"])
+            && run(log, opts, "sudo", &["locale-gen"]);
+        let write = write_root_file(log, opts, "/etc/locale.conf", &format!("LANG={loc}"));
+        results.push(StepResult {
+            label: format!("locale {loc}"),
+            ok: gen && write,
+        });
+    }
+
+    if let Some(km) = &plan.keymap {
+        let ok = write_root_file(log, opts, "/etc/vconsole.conf", &format!("KEYMAP={km}"));
+        results.push(StepResult {
+            label: format!("teclado {km}"),
+            ok,
+        });
+    }
+
+    if let Some(host) = &plan.hostname {
+        let ok = write_root_file(log, opts, "/etc/hostname", host);
+        // Anade la entrada a /etc/hosts si no esta ya.
+        let line = format!("127.0.1.1 {host}.localdomain {host}");
+        let cmd = format!("grep -q '{host}' /etc/hosts || printf '%s\\n' '{line}' >> /etc/hosts");
+        let hosts_ok = run(log, opts, "sudo", &["bash", "-c", &cmd]);
+        results.push(StepResult {
+            label: format!("hostname {host}"),
+            ok: ok && hosts_ok,
+        });
+    }
+}
+
+/// True si /etc/default/grub ya contiene el texto dado.
+fn grub_has(text: &str) -> bool {
+    std::fs::read_to_string("/etc/default/grub")
+        .map(|s| s.contains(text))
+        .unwrap_or(false)
+}
+
+/// Configura el arranque para microcodigo de CPU y/o NVIDIA. Para GRUB lo hace
+/// automaticamente; para systemd-boot deja instrucciones precisas.
+fn configure_boot(
+    plan: &InstallPlan,
+    log: &mut Logger,
+    opts: &InstallOptions,
+    results: &mut Vec<StepResult>,
+) {
+    if !plan.has_microcode() && !plan.has_nvidia() {
+        return;
+    }
+    log.log("==> Configurando el arranque (microcodigo de CPU / NVIDIA)");
+    let params = plan.kernel_params();
+
+    match detect_bootloader() {
+        Bootloader::Grub => {
+            for p in &params {
+                if grub_has(p) {
+                    log.log(&format!("  parametro de kernel ya presente: {p}"));
+                    continue;
+                }
+                let sed = format!(r#"s/\(GRUB_CMDLINE_LINUX_DEFAULT="[^"]*\)"/\1 {p}"/"#);
+                let ok = run(log, opts, "sudo", &["sed", "-i", &sed, "/etc/default/grub"]);
+                results.push(StepResult {
+                    label: format!("grub: +{p}"),
+                    ok,
+                });
+            }
+            // grub-mkconfig detecta el microcodigo automaticamente.
+            let ok = run(
+                log,
+                opts,
+                "sudo",
+                &["grub-mkconfig", "-o", "/boot/grub/grub.cfg"],
+            );
+            results.push(StepResult {
+                label: "grub-mkconfig".into(),
+                ok,
+            });
+        }
+        Bootloader::SystemdBoot => {
+            log.log("  systemd-boot detectado. Edita /boot/loader/entries/*.conf:");
+            if plan.has_microcode() {
+                let img = if plan.official.iter().any(|p| p == "intel-ucode") {
+                    "intel-ucode.img"
+                } else {
+                    "amd-ucode.img"
+                };
+                log.log(&format!(
+                    "    - Anade ANTES de la linea 'initrd' existente:  initrd /{img}"
+                ));
+            }
+            for p in &params {
+                log.log(&format!("    - Anade a la linea 'options':  {p}"));
+            }
+            results.push(StepResult {
+                label: "systemd-boot (instrucciones en el log)".into(),
+                ok: true,
+            });
+        }
+        Bootloader::Unknown => {
+            log.log("  ! No se detecto GRUB ni systemd-boot. Configura el arranque a mano:");
+            if plan.has_microcode() {
+                log.log("    El microcodigo necesita una linea 'initrd' en tu bootloader.");
+            }
+            for p in &params {
+                log.log(&format!("    Anade el parametro de kernel: {p}"));
+            }
+            results.push(StepResult {
+                label: "arranque (configurar manualmente)".into(),
+                ok: true,
+            });
+        }
+    }
+}
+
 /// Ejecuta el plan completo y devuelve los resultados de cada paso.
 pub fn execute(plan: &InstallPlan, opts: &InstallOptions, log: &mut Logger) -> Vec<StepResult> {
     let mut results = Vec::new();
+
+    // Multilib debe activarse antes del -Syu para que pacman vea esos paquetes.
+    if plan.enable_multilib {
+        log.log("==> Habilitando el repositorio [multilib]");
+        results.push(enable_multilib(log, opts));
+    }
 
     log.log("==> Sincronizando bases de datos y sistema (pacman -Syu)");
     let mut syu = vec!["pacman", "-Syu"];
@@ -228,6 +415,12 @@ pub fn execute(plan: &InstallPlan, opts: &InstallOptions, log: &mut Logger) -> V
             }
         }
     }
+
+    // Basicos del sistema (locale, zona horaria, teclado, hostname).
+    configure_system_basics(plan, log, opts, &mut results);
+
+    // Drivers que requieren tocar el arranque: microcodigo de CPU y NVIDIA.
+    configure_boot(plan, log, opts, &mut results);
 
     // Servicios de sistema: display manager (sddm/gdm/lightdm), NetworkManager,
     // bluetooth... Esto deja el equipo listo para arrancar al escritorio.
