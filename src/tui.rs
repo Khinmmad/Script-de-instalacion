@@ -556,11 +556,9 @@ fn handle_system(app: &mut App, code: KeyCode) {
             SYS_REBOOT => app.sys_reboot = !app.sys_reboot,
             _ => {}
         },
-        KeyCode::Enter | KeyCode::Char('i') => {
-            if app.sys_cursor <= 3 {
-                app.typing = true;
-                app.status = "Editando campo. Enter confirma, Esc cancela.".into();
-            }
+        KeyCode::Enter | KeyCode::Char('i') if app.sys_cursor <= 3 => {
+            app.typing = true;
+            app.status = "Editando campo. Enter confirma, Esc cancela.".into();
         }
         _ => {}
     }
