@@ -173,6 +173,19 @@ fn show_plan(plan: &InstallPlan, sys: &SystemStatus) {
             println!("                  - {cmd}");
         }
     }
+    if plan.grub_config != Default::default() {
+        let mut grub = Vec::new();
+        if let Some(t) = plan.grub_config.timeout {
+            grub.push(format!("GRUB_TIMEOUT={t}"));
+        }
+        if plan.grub_config.saved_default {
+            grub.push("GRUB_DEFAULT=saved".into());
+        }
+        if plan.grub_config.gfxmode_auto {
+            grub.push("GRUB_GFXMODE=auto".into());
+        }
+        println!("  GRUB           : {}", grub.join(", "));
+    }
 
     // Estimacion de espacio: lo que se va a descargar / instalar y lo
     // que queda libre. Si falla o no hay nada que instalar, se omite.

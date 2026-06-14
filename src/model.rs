@@ -92,6 +92,27 @@ pub struct InstallPlan {
     /// usuario que invoca el programa. Si el perfil viene de una
     /// fuente no confiable (CI, PR), hay que revisarlos antes.
     pub post_install: Vec<String>,
+    /// Ajustes funcionales de /etc/default/grub (no temas). Cada
+    /// flag se aplica solo si esta activo; timeout es opcional y se
+    /// interpreta como segundos (0 = sin menu, 5 = default, etc.).
+    pub grub_config: GrubConfig,
+}
+
+/// Ajustes funcionales de GRUB aplicados por el instalador. Solo
+/// cubre los mas comunes que un usuario quiere cambiar; el resto
+/// sigue siendo editable a mano en /etc/default/grub.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GrubConfig {
+    /// GRUB_TIMEOUT en segundos. `None` = no tocar.
+    /// 0 = sin menu (boot instantaneo).
+    /// 5 = default de Arch.
+    pub timeout: Option<i32>,
+    /// `GRUB_DEFAULT=saved` + `GRUB_SAVEDEFAULT=true`. Recuerda la
+    /// ultima opcion arrancada.
+    pub saved_default: bool,
+    /// `GRUB_GFXMODE=auto`. Pide a GRUB autodetectar la resolucion
+    /// en vez de usar la default.
+    pub gfxmode_auto: bool,
 }
 
 /// Une una lista para mostrarla. Si esta vacia devuelve `(ninguno)` para
@@ -205,6 +226,7 @@ impl InstallPlan {
             reboot_after: false,
             cleanup_orphans: false,
             post_install: Vec::new(),
+            grub_config: GrubConfig::default(),
         }
     }
 
@@ -309,6 +331,9 @@ pub struct Profile {
     /// fuente no confiable (CI, PR), hay que revisarlos antes.
     #[serde(default)]
     pub post_install: Vec<String>,
+    /// Ajustes de GRUB. Equivale a `InstallPlan::grub_config`.
+    #[serde(default)]
+    pub grub_config: GrubConfig,
 }
 
 impl Profile {
@@ -325,6 +350,7 @@ impl Profile {
             keymap: plan.keymap.clone(),
             hostname: plan.hostname.clone(),
             post_install: plan.post_install.clone(),
+            grub_config: plan.grub_config.clone(),
         }
     }
 
@@ -352,6 +378,7 @@ impl Profile {
         plan.keymap = km;
         plan.hostname = host;
         plan.post_install = post_install;
+        plan.grub_config = self.grub_config;
         plan
     }
 }

@@ -139,10 +139,14 @@ const MENU_INSTALL: usize = 9;
 const MENU_QUIT: usize = 10;
 
 /// Numero de campos en el formulario de configuracion del sistema.
-const SYS_FIELDS: usize = 7;
+const SYS_FIELDS: usize = 10;
 const SYS_MULTILIB: usize = 4;
 const SYS_REBOOT: usize = 5;
 const SYS_CLEANUP: usize = 6;
+#[allow(dead_code)]
+const SYS_GRUB_TIMEOUT: usize = 7;
+const SYS_GRUB_SAVED: usize = 8;
+const SYS_GRUB_GFX: usize = 9;
 
 struct App {
     mode: Mode,
@@ -201,6 +205,13 @@ struct App {
     sys_multilib: bool,
     sys_reboot: bool,
     sys_cleanup_orphans: bool,
+    /// GRUB_TIMEOUT en segundos (vacio = no tocar). Texto libre que
+    /// se parsea a i32 en build_plan.
+    sys_grub_timeout: String,
+    /// GRUB_DEFAULT=saved + GRUB_SAVEDEFAULT=true.
+    sys_grub_saved: bool,
+    /// GRUB_GFXMODE=auto.
+    sys_grub_gfxmode: bool,
 
     // Region para reflector (pais/continente). Se elige desde un picker
     // aparte porque la lista de paises es larga y no encaja en el
@@ -276,6 +287,11 @@ impl App {
         // Empezamos con la limpieza apagada: es algo destructivo y no
         // queremos borrar nada sin que el usuario lo haya pedido.
         let sys_cleanup_orphans = false;
+        // Ajustes de GRUB vacios por defecto: el usuario los activa
+        // explicitamente en el formulario.
+        let sys_grub_timeout = String::new();
+        let sys_grub_saved = false;
+        let sys_grub_gfxmode = false;
 
         App {
             mode: Mode::Welcome,
@@ -302,6 +318,9 @@ impl App {
             sys_multilib,
             sys_reboot,
             sys_cleanup_orphans,
+            sys_grub_timeout,
+            sys_grub_saved,
+            sys_grub_gfxmode,
             sys_mirror_region: String::new(),
             pending_quit: false,
             update_notice: crate::update::check_for_update(),
@@ -321,6 +340,7 @@ impl App {
             1 => Some(&mut self.sys_timezone),
             2 => Some(&mut self.sys_keymap),
             3 => Some(&mut self.sys_hostname),
+            7 => Some(&mut self.sys_grub_timeout),
             _ => None,
         }
     }
@@ -374,6 +394,12 @@ impl App {
         plan.enable_multilib = self.sys_multilib;
         plan.reboot_after = self.sys_reboot;
         plan.cleanup_orphans = self.sys_cleanup_orphans;
+        // GRUB_TIMEOUT: si el usuario escribio algo, intentamos
+        // parsearlo a i32. Texto invalido se ignora (no se aplica).
+        plan.grub_config.timeout =
+            nonempty(&self.sys_grub_timeout).and_then(|s| s.parse::<i32>().ok());
+        plan.grub_config.saved_default = self.sys_grub_saved;
+        plan.grub_config.gfxmode_auto = self.sys_grub_gfxmode;
         plan
     }
 
@@ -447,6 +473,13 @@ impl App {
         self.sys_timezone = p.timezone.unwrap_or_default();
         self.sys_keymap = p.keymap.unwrap_or_default();
         self.sys_hostname = p.hostname.unwrap_or_default();
+        self.sys_grub_timeout = p
+            .grub_config
+            .timeout
+            .map(|t| t.to_string())
+            .unwrap_or_default();
+        self.sys_grub_saved = p.grub_config.saved_default;
+        self.sys_grub_gfxmode = p.grub_config.gfxmode_auto;
         self.status = format!("Perfil '{}' cargado.", p.name);
     }
 }
@@ -972,6 +1005,8 @@ fn handle_system(app: &mut App, code: KeyCode) {
             SYS_MULTILIB => app.sys_multilib = !app.sys_multilib,
             SYS_REBOOT => app.sys_reboot = !app.sys_reboot,
             SYS_CLEANUP => app.sys_cleanup_orphans = !app.sys_cleanup_orphans,
+            SYS_GRUB_SAVED => app.sys_grub_saved = !app.sys_grub_saved,
+            SYS_GRUB_GFX => app.sys_grub_gfxmode = !app.sys_grub_gfxmode,
             _ => {}
         },
         KeyCode::Enter | KeyCode::Char('i') => match app.sys_cursor {
@@ -1291,6 +1326,7 @@ fn draw_system(f: &mut Frame, area: Rect, app: &App) {
             "mi-arch",
             app.sys_state.hostname.is_some(),
         ),
+        ("GRUB_TIMEOUT (seg)", &app.sys_grub_timeout, "5", false),
     ];
 
     let mut lines = vec![Line::from("")];
@@ -1376,6 +1412,25 @@ fn draw_system(f: &mut Frame, area: Rect, app: &App) {
         SYS_CLEANUP,
         "Limpiar paquetes huerfanos al terminar (pacman -Rns)",
         app.sys_cleanup_orphans,
+        app.sys_cursor,
+        "",
+    ));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  GRUB (opcional, solo aplica a /etc/default/grub)",
+        Style::default().fg(Color::Cyan),
+    )));
+    lines.push(toggle_line(
+        SYS_GRUB_SAVED,
+        "Recordar ultima opcion arrancada (GRUB_DEFAULT=saved)",
+        app.sys_grub_saved,
+        app.sys_cursor,
+        "",
+    ));
+    lines.push(toggle_line(
+        SYS_GRUB_GFX,
+        "Resolucion automatica de GRUB (GRUB_GFXMODE=auto)",
+        app.sys_grub_gfxmode,
         app.sys_cursor,
         "",
     ));
@@ -1991,6 +2046,27 @@ fn review_system_section(plan: &InstallPlan) -> Vec<Line<'static>> {
             )));
         }
     }
+    if plan.grub_config != Default::default() {
+        let mut grub_parts = Vec::new();
+        if let Some(t) = plan.grub_config.timeout {
+            grub_parts.push(format!("GRUB_TIMEOUT={t}"));
+        }
+        if plan.grub_config.saved_default {
+            grub_parts.push("GRUB_DEFAULT=saved".into());
+        }
+        if plan.grub_config.gfxmode_auto {
+            grub_parts.push("GRUB_GFXMODE=auto".into());
+        }
+        out.push(Line::from(vec![
+            Span::styled(
+                "  GRUB:  ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(grub_parts.join(", "), Style::default().fg(Color::Gray)),
+        ]));
+    }
     out
 }
 
@@ -2165,6 +2241,7 @@ mod tests {
             keymap: Some("la-latin1".into()),
             hostname: Some("mi-arch".into()),
             post_install: vec![],
+            grub_config: Default::default(),
         };
         app.apply_profile(prof);
         assert_eq!(DESKTOP_ENVIRONMENTS[app.de_index].id, "gnome");

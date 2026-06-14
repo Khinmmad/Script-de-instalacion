@@ -650,6 +650,45 @@ fn grub_has(text: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Aplica un par `KEY=VALUE` en /etc/default/grub via sed. Si la
+/// linea `KEY=...` existe (con o sin comentario), la reemplaza por la
+/// nueva. Si esta comentada, la descomenta y actualiza el valor. Si
+/// no existe, la anade al final.
+///
+/// La regex sed esta acotada a lineas que empiecen por `KEY=` (con
+/// opcional `#` inicial) para no falsear lineas que solo contengan
+/// la KEY como substring.
+fn apply_grub_kv(log: &mut Logger, opts: &InstallOptions, key: &str, value: &str) {
+    if grub_has(&format!("{key}=")) {
+        // Reemplaza '#?KEY=.*' por 'KEY=VALUE'.
+        let sed = format!(r"^\s*#\?\s*{key}=.*$");
+        let repl = format!("{key}={value}");
+        let _ = run(
+            log,
+            opts,
+            "sudo",
+            &[
+                "sed",
+                "-i",
+                &format!("s/{sed}/{repl}/"),
+                "/etc/default/grub",
+            ],
+        );
+    } else {
+        // Anade al final.
+        let _ = run(
+            log,
+            opts,
+            "sudo",
+            &[
+                "sh",
+                "-c",
+                &format!("echo '{key}={value}' >> /etc/default/grub"),
+            ],
+        );
+    }
+}
+
 /// Configura el arranque para microcodigo de CPU y/o NVIDIA. Para GRUB lo hace
 /// automaticamente; para systemd-boot deja instrucciones precisas.
 fn configure_boot(
@@ -658,16 +697,22 @@ fn configure_boot(
     opts: &InstallOptions,
     results: &mut Vec<StepResult>,
 ) {
-    if !plan.has_microcode() && !plan.has_nvidia() {
+    let params = plan.kernel_params();
+    let grub_config = &plan.grub_config;
+    let has_grub_changes = !params.is_empty()
+        || grub_config.timeout.is_some()
+        || grub_config.saved_default
+        || grub_config.gfxmode_auto;
+    if !has_grub_changes {
         return;
     }
-    log.log("==> Configurando el arranque (microcodigo de CPU / NVIDIA)");
+    log.log("==> Configurando el arranque (GRUB / microcodigo / NVIDIA)");
     let params = plan.kernel_params();
 
     match detect_bootloader() {
         Bootloader::Grub => {
             // Backup unico antes de la primera modificacion.
-            if !params.is_empty() && !backup_etc_file(log, opts, "/etc/default/grub") {
+            if !backup_etc_file(log, opts, "/etc/default/grub") {
                 log.log("  ! no se pudo hacer backup de /etc/default/grub; sigo de todas formas");
             }
             for p in &params {
@@ -682,7 +727,35 @@ fn configure_boot(
                     ok,
                 });
             }
-            // grub-mkconfig detecta el microcodigo automaticamente.
+            // Ajustes funcionales: GRUB_TIMEOUT, GRUB_SAVEDEFAULT,
+            // GRUB_GFXMODE. Se aplican con sed (mismo patron que el
+            // resto del archivo: sustituye 'KEY=VALOR' por la nueva
+            // linea, o la anade si no existe).
+            if let Some(t) = grub_config.timeout {
+                apply_grub_kv(log, opts, "GRUB_TIMEOUT", &t.to_string());
+                results.push(StepResult {
+                    label: format!("grub: GRUB_TIMEOUT={t}"),
+                    ok: true,
+                });
+            }
+            if grub_config.saved_default {
+                apply_grub_kv(log, opts, "GRUB_DEFAULT", "saved");
+                apply_grub_kv(log, opts, "GRUB_SAVEDEFAULT", "true");
+                results.push(StepResult {
+                    label: "grub: GRUB_DEFAULT=saved".into(),
+                    ok: true,
+                });
+            }
+            if grub_config.gfxmode_auto {
+                apply_grub_kv(log, opts, "GRUB_GFXMODE", "auto");
+                results.push(StepResult {
+                    label: "grub: GRUB_GFXMODE=auto".into(),
+                    ok: true,
+                });
+            }
+            // grub-mkconfig detecta el microcodigo automaticamente y
+            // ademas relee /etc/default/grub, asi que siempre lo
+            // corremos si hubo algun cambio.
             let ok = run(
                 log,
                 opts,

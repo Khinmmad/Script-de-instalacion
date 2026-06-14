@@ -205,6 +205,7 @@ mod tests {
             keymap: None,
             hostname: None,
             post_install: vec![],
+            grub_config: Default::default(),
         }
     }
 
