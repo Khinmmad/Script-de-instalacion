@@ -165,6 +165,7 @@ fn show_plan(plan: &InstallPlan, sys: &SystemStatus) {
         plan.timezone.as_deref(),
         plan.keymap.as_deref(),
         plan.hostname.as_deref(),
+        plan.mirror_region.as_deref(),
         plan.enable_multilib,
         plan.reboot_after,
         SystemLabelStyle::Detailed,
