@@ -674,7 +674,10 @@ pub fn execute(plan: &InstallPlan, opts: &InstallOptions, log: &mut Logger) -> V
     //    registran en el log; los `Fail` no abortan la instalacion
     //    (el usuario podra ver el porque en el log mas tarde), pero
     //    hacen que varios pasos siguientes fallen de forma esperada.
-    let report = PreflightReport::run(!plan.aur.is_empty());
+    //    El check de "espacio para el plan" requiere el estado actual
+    //    del sistema, asi que lo detectamos aqui.
+    let sys = crate::detect::SystemStatus::detect();
+    let report = PreflightReport::run_for_plan(plan, &sys);
     let preflight_ok = report.log(log);
     if !preflight_ok {
         log.log("    Continuo de todas formas; los pasos que dependan de los checks fallidos probablemente tambien fallaran.");

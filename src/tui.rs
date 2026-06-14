@@ -570,8 +570,10 @@ pub fn run() -> Result<Outcome> {
                     // Re-corre pre-flight manualmente (la primera vez
                     // se ejecuta solo al pintar la pantalla).
                     let plan = app.build_plan();
-                    app.preflight =
-                        Some(crate::preflight::PreflightReport::run(!plan.aur.is_empty()));
+                    app.preflight = Some(crate::preflight::PreflightReport::run_for_plan(
+                        &plan,
+                        &app.sys_state,
+                    ));
                     app.status = "Pre-flight re-ejecutado.".into();
                 }
                 _ => {}
@@ -1568,9 +1570,9 @@ fn draw_review(f: &mut Frame, area: Rect, app: &mut App) {
 
     // El pre-flight se calcula la primera vez que se pinta la pantalla.
     // Despues se puede re-ejecutar con 'p'.
-    let report = app
-        .preflight
-        .get_or_insert_with(|| crate::preflight::PreflightReport::run(!plan.aur.is_empty()));
+    let report = app.preflight.get_or_insert_with(|| {
+        crate::preflight::PreflightReport::run_for_plan(&plan, &app.sys_state)
+    });
 
     // La estimacion de espacio se calcula una vez (pacman -Si no cambia
     // a cada redibujado). Es best-effort: si pacman no responde o no

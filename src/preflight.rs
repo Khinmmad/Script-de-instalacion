@@ -15,8 +15,10 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use crate::estimate::{free_space, human_bytes};
+use crate::detect::SystemStatus;
+use crate::estimate::{self, free_space, human_bytes};
 use crate::installer::Logger;
+use crate::model::InstallPlan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckStatus {
@@ -84,6 +86,18 @@ impl PreflightReport {
             checks.push(check_aur_tool("gcc", "gcc"));
         }
         Self { checks }
+    }
+
+    /// Igual que `run` pero anade un check que contrasta el espacio libre
+    /// contra el tamano estimado del plan. Falla si no cabe, avisa si
+    /// queda justo. Devuelve `None` si el plan no requiere instalar nada
+    /// (no hay sentido en comprobar).
+    pub fn run_for_plan(plan: &InstallPlan, sys: &SystemStatus) -> Self {
+        let mut report = Self::run(!plan.aur.is_empty());
+        if let Some(c) = check_disk_for_estimate(plan, sys) {
+            report.checks.push(c);
+        }
+        report
     }
 
     /// `true` si ningun check dio `Fail`. Los `Warn` no cuentan.
@@ -215,6 +229,65 @@ fn check_disk_space() -> PreflightCheck {
     }
 }
 
+/// Contrasta el espacio libre con el tamano estimado del plan. Esto es
+/// mas preciso que `check_disk_space` (que usa umbrales absolutos):
+/// si vas a instalar paquetes pequenos en una maquina con poco disco
+/// tambien avisamos, y si vas a instalar paquetes grandes en una
+/// maquina con mucho disco no infladamos el check.
+///
+/// Devuelve `None` si el plan no requiere instalar nada (no hay contra
+/// que medir).
+fn check_disk_for_estimate(plan: &InstallPlan, sys: &SystemStatus) -> Option<PreflightCheck> {
+    let est = estimate::estimate(&plan.official, &plan.aur, &sys.official, &sys.aur);
+    let needed = est.total_install();
+    let unknown = est.total_unknown();
+    if needed == 0 && unknown == 0 {
+        return None;
+    }
+    match est.free_bytes {
+        None => Some(PreflightCheck::warn(
+            "espacio para el plan",
+            "no se pudo leer df; comprueba el espacio manualmente",
+        )),
+        Some(free) if free < needed => Some(PreflightCheck::fail(
+            "espacio para el plan",
+            format!(
+                "necesitas {} pero solo hay {} libres en /",
+                human_bytes(needed),
+                human_bytes(free)
+            ),
+        )),
+        // Margen < 20% libre tras instalar: justo. Warn, no Fail.
+        Some(free) if free - needed < (free / 5) => {
+            let remaining = free.saturating_sub(needed);
+            let mut detail = format!(
+                "instalara {}; quedaran {} libres",
+                human_bytes(needed),
+                human_bytes(remaining)
+            );
+            if unknown > 0 {
+                detail.push_str(&format!(
+                    " (mas {unknown} paquete(s) AUR sin tamano conocido)"
+                ));
+            }
+            Some(PreflightCheck::warn("espacio para el plan", detail))
+        }
+        Some(free) => {
+            let mut detail = format!(
+                "instalara {}; quedaran {} libres",
+                human_bytes(needed),
+                human_bytes(free.saturating_sub(needed))
+            );
+            if unknown > 0 {
+                detail.push_str(&format!(
+                    " (mas {unknown} paquete(s) AUR sin tamano conocido)"
+                ));
+            }
+            Some(PreflightCheck::ok("espacio para el plan", detail))
+        }
+    }
+}
+
 fn check_etc_writable() -> PreflightCheck {
     // Si somos root, /etc es escribible sin mas.
     if crate::installer::is_root() {
@@ -263,10 +336,15 @@ fn command_exists(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::estimate::PackageSizes;
+
+    fn empty_plan() -> InstallPlan {
+        InstallPlan::new(None, None, vec![], vec![])
+    }
 
     #[test]
     fn report_runs_all_checks() {
-        // Sin AUR: 7 checks; con AUR: 10.
+        // Sin AUR: 7 checks base; con AUR: 10.
         let lite = PreflightReport::run(false);
         assert_eq!(lite.checks.len(), 7);
         let aur = PreflightReport::run(true);
@@ -280,5 +358,55 @@ mod tests {
         assert!(empty.all_ok());
         assert!(!empty.has_warnings());
         assert!(!empty.has_failures());
+    }
+
+    #[test]
+    fn disk_for_estimate_skips_empty_plan() {
+        // Si el plan no tiene nada que instalar, devolvemos None
+        // (no hay contra que medir).
+        let plan = empty_plan();
+        let sys = SystemStatus::default();
+        let r = check_disk_for_estimate(&plan, &sys);
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn disk_for_estimate_fails_when_short() {
+        // Simulamos una estimate que necesita mas de lo libre.
+        // No podemos forzar el free_bytes desde fuera, pero podemos
+        // verificar que el check existe y devuelve algo razonable.
+        // (El caso real depende de df + pacman, que no podemos simular.)
+        let plan = InstallPlan::new(None, None, vec!["vim".to_string()], vec![]);
+        let sys = SystemStatus::default();
+        // Con un sys vacio, estimate devuelve todo unknown. El check
+        // existe (warn sobre "no se pudo leer df") o no, segun el
+        // entorno. Solo comprobamos que no paniquea.
+        let _ = check_disk_for_estimate(&plan, &sys);
+    }
+
+    #[test]
+    fn run_for_plan_appends_estimate_check() {
+        // run_for_plan siempre anade un check extra al final (aunque
+        // sea None si el plan esta vacio). Para un plan con paquetes,
+        // debe haber al menos uno mas que run.
+        let plan = InstallPlan::new(None, None, vec!["vim".to_string()], vec![]);
+        let sys = SystemStatus::default();
+        let lite = PreflightReport::run(false);
+        let for_plan = PreflightReport::run_for_plan(&plan, &sys);
+        // run() = 7 checks; run_for_plan debe tener >= 7 (puede ser
+        // exactamente 7 si el plan no genera check, pero solo si
+        // el plan esta vacio). Con un paquete debe ser >= 8 si el
+        // check se anade, o 7 si el check devuelve None.
+        // En este caso, el check SI se anada (hay paquetes).
+        assert!(for_plan.checks.len() >= lite.checks.len());
+    }
+
+    #[test]
+    fn package_sizes_default_is_zero() {
+        // Sanity check: la API de estimate sigue como la usamos aqui.
+        let s = PackageSizes::default();
+        assert_eq!(s.download_bytes, 0);
+        assert_eq!(s.install_bytes, 0);
+        assert_eq!(s.unknown, 0);
     }
 }

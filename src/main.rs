@@ -234,7 +234,7 @@ fn run_plan(plan: InstallPlan, cli: &Cli, already_confirmed: bool) -> Result<()>
 
     // Pre-flight en CLI: imprime el informe y aborta si hay fallos
     // criticos, salvo que el usuario use --yes.
-    let report = preflight::PreflightReport::run(!plan.aur.is_empty());
+    let report = preflight::PreflightReport::run_for_plan(&plan, &sys);
     if report.has_failures() && !cli.yes && !cli.dry_run {
         eprintln!("\nPre-flight checks con fallos:");
         for c in &report.checks {
