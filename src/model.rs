@@ -84,6 +84,14 @@ pub struct InstallPlan {
     /// que ya no son dependencia de nada). Opcional y desactivado por
     /// defecto para no borrar nada sin consentimiento.
     pub cleanup_orphans: bool,
+    /// Comandos shell a ejecutar al final de la instalacion. Cada
+    /// elemento se pasa a `sh -c`. Pensado para que cada usuario
+    /// meta sus hooks sin parchar el binario.
+    ///
+    /// **Aviso**: estos comandos corren con los privilegios del
+    /// usuario que invoca el programa. Si el perfil viene de una
+    /// fuente no confiable (CI, PR), hay que revisarlos antes.
+    pub post_install: Vec<String>,
 }
 
 /// Une una lista para mostrarla. Si esta vacia devuelve `(ninguno)` para
@@ -196,6 +204,7 @@ impl InstallPlan {
             enable_multilib: false,
             reboot_after: false,
             cleanup_orphans: false,
+            post_install: Vec::new(),
         }
     }
 
@@ -291,6 +300,15 @@ pub struct Profile {
     /// Hostname del equipo. Equivale a `InstallPlan::hostname`.
     #[serde(default)]
     pub hostname: Option<String>,
+    /// Comandos shell a ejecutar al final de la instalacion. Cada
+    /// elemento se pasa a `sh -c`. Pensado para que cada usuario
+    /// meta sus hooks sin parchar el binario.
+    ///
+    /// **Aviso**: estos comandos corren con los privilegios del
+    /// usuario que invoca el programa. Si el perfil viene de una
+    /// fuente no confiable (CI, PR), hay que revisarlos antes.
+    #[serde(default)]
+    pub post_install: Vec<String>,
 }
 
 impl Profile {
@@ -306,6 +324,7 @@ impl Profile {
             timezone: plan.timezone.clone(),
             keymap: plan.keymap.clone(),
             hostname: plan.hostname.clone(),
+            post_install: plan.post_install.clone(),
         }
     }
 
@@ -320,12 +339,19 @@ impl Profile {
         let tz = self.timezone.and_then(nonempty_string);
         let km = self.keymap.and_then(nonempty_string);
         let host = self.hostname.and_then(nonempty_string);
+        // Filtramos post_install vacios por la misma razon.
+        let post_install: Vec<String> = self
+            .post_install
+            .into_iter()
+            .filter(|s| !s.trim().is_empty())
+            .collect();
         let mut plan = InstallPlan::new(de, dm, self.official_packages, self.aur_packages);
         plan.mirror_region = region;
         plan.locale = locale;
         plan.timezone = tz;
         plan.keymap = km;
         plan.hostname = host;
+        plan.post_install = post_install;
         plan
     }
 }

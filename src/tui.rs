@@ -1959,18 +1959,39 @@ fn review_system_section(plan: &InstallPlan) -> Vec<Line<'static>> {
         plan.reboot_after,
         SystemLabelStyle::Detailed,
     );
-    if sys.is_empty() {
-        return Vec::new();
+    let mut out = Vec::new();
+    if !sys.is_empty() {
+        out.push(Line::from(vec![
+            Span::styled(
+                "  Sistema:  ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(sys.join(", "), Style::default().fg(Color::Gray)),
+        ]));
     }
-    vec![Line::from(vec![
-        Span::styled(
-            "  Sistema:  ",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(sys.join(", "), Style::default().fg(Color::Gray)),
-    ])]
+    if !plan.post_install.is_empty() {
+        out.push(Line::from(vec![
+            Span::styled(
+                "  Post-install:  ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{} comando(s) al terminar:", plan.post_install.len()),
+                Style::default().fg(Color::Gray),
+            ),
+        ]));
+        for cmd in &plan.post_install {
+            out.push(Line::from(Span::styled(
+                format!("    - {cmd}"),
+                Style::default().fg(Color::Gray),
+            )));
+        }
+    }
+    out
 }
 
 /// Pie con los atajos de teclado de la pantalla de revision.
@@ -2143,6 +2164,7 @@ mod tests {
             timezone: Some("America/Mexico_City".into()),
             keymap: Some("la-latin1".into()),
             hostname: Some("mi-arch".into()),
+            post_install: vec![],
         };
         app.apply_profile(prof);
         assert_eq!(DESKTOP_ENVIRONMENTS[app.de_index].id, "gnome");

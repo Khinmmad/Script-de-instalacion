@@ -968,7 +968,56 @@ pub fn execute(plan: &InstallPlan, opts: &InstallOptions, log: &mut Logger) -> V
         }
     }
 
+    // 11. Post-install hooks: comandos shell que el usuario definio en
+    //     su perfil, ejecutados al final via `sh -c`. Pensado para
+    //     extensibilidad sin tocar el binario.
+    if !plan.post_install.is_empty() {
+        log.log(&format!(
+            "==> Ejecutando {} post-install hook(s) (sh -c)",
+            plan.post_install.len()
+        ));
+        for cmd in &plan.post_install {
+            results.push(run_shell_hook(log, opts, cmd));
+        }
+    }
+
     results
+}
+
+/// Ejecuta un comando shell de `post_install` via `sh -c`. El input
+/// viene del perfil TOML (controlado por el usuario); no se valida
+/// porque es intencionadamente arbitrario. En dry-run, se loguea
+/// el comando sin ejecutarlo.
+fn run_shell_hook(log: &mut Logger, opts: &InstallOptions, cmd: &str) -> StepResult {
+    if opts.dry_run {
+        log.log(&format!("[dry-run] sh -c {cmd:?}"));
+        return StepResult {
+            label: format!("post-install: {cmd}"),
+            ok: true,
+        };
+    }
+    log.log(&format!("$ sh -c {cmd:?}"));
+    let ok = match Command::new("sh").args(["-c", cmd]).output() {
+        Ok(out) if out.status.success() => true,
+        Ok(out) => {
+            log_command_failure(
+                log,
+                "sh",
+                &format!("sh -c {cmd:?}"),
+                &out.stderr,
+                out.status.code(),
+            );
+            false
+        }
+        Err(e) => {
+            log.log(&format!("  ! no se pudo ejecutar 'sh -c {cmd}': {e}"));
+            false
+        }
+    };
+    StepResult {
+        label: format!("post-install: {cmd}"),
+        ok,
+    }
 }
 
 /// Normaliza el nombre de una unidad systemd (anade .service si no trae sufijo).

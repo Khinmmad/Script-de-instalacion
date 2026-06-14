@@ -204,6 +204,7 @@ mod tests {
             timezone: None,
             keymap: None,
             hostname: None,
+            post_install: vec![],
         }
     }
 

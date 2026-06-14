@@ -164,6 +164,15 @@ fn show_plan(plan: &InstallPlan, sys: &SystemStatus) {
         svcs.push("audio (PipeWire, --user)".into());
     }
     println!("  Servicios      : {}", format_list_or_none(&svcs));
+    if !plan.post_install.is_empty() {
+        println!(
+            "  Post-install   : {} comando(s) shell al terminar",
+            plan.post_install.len()
+        );
+        for cmd in &plan.post_install {
+            println!("                  - {cmd}");
+        }
+    }
 
     // Estimacion de espacio: lo que se va a descargar / instalar y lo
     // que queda libre. Si falla o no hay nada que instalar, se omite.
