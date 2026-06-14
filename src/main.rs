@@ -2,6 +2,7 @@
 //! escritorio tras una instalacion limpia de Arch Linux.
 
 mod catalog;
+mod detect;
 mod installer;
 mod model;
 mod profile;
@@ -14,7 +15,9 @@ use std::process::ExitCode;
 use anyhow::Result;
 
 use installer::{InstallOptions, Logger};
-use model::{InstallPlan, Profile};
+use model::{format_list_or_none, format_system_settings, InstallPlan, Profile, SystemLabelStyle};
+
+use crate::detect::SystemStatus;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -93,7 +96,7 @@ fn confirm(prompt: &str) -> bool {
 }
 
 /// Imprime un resumen del plan en texto plano.
-fn show_plan(plan: &InstallPlan) {
+fn show_plan(plan: &InstallPlan, sys: &SystemStatus) {
     println!("\n── Plan de instalacion ──");
     if let Some(de) = &plan.desktop_env_id {
         println!("  Entorno        : {de}");
@@ -101,52 +104,75 @@ fn show_plan(plan: &InstallPlan) {
     if let Some(dm) = &plan.display_manager {
         println!("  Display manager: {dm}");
     }
+    let off_to_install: Vec<String> = plan
+        .official
+        .iter()
+        .filter(|p| !sys.official.contains(*p) && !sys.aur.contains(*p))
+        .cloned()
+        .collect();
+    let off_have: Vec<String> = plan
+        .official
+        .iter()
+        .filter(|p| sys.official.contains(*p) || sys.aur.contains(*p))
+        .cloned()
+        .collect();
+    let aur_to_install: Vec<String> = plan
+        .aur
+        .iter()
+        .filter(|p| !sys.official.contains(*p) && !sys.aur.contains(*p))
+        .cloned()
+        .collect();
+    let aur_have: Vec<String> = plan
+        .aur
+        .iter()
+        .filter(|p| sys.official.contains(*p) || sys.aur.contains(*p))
+        .cloned()
+        .collect();
     println!(
-        "  Oficiales ({}) : {}",
-        plan.official.len(),
-        join_or_none(&plan.official)
+        "  Por instalar   : {} oficial(es), {} AUR",
+        off_to_install.len(),
+        aur_to_install.len()
     );
     println!(
-        "  AUR ({})       : {}",
-        plan.aur.len(),
-        join_or_none(&plan.aur)
+        "  Ya instalado   : {} oficial(es), {} AUR",
+        off_have.len(),
+        aur_have.len()
     );
+    if !sys.updates_available.is_empty() {
+        println!(
+            "  Actualizaciones: {} disponibles (las aplicara pacman -Syu)",
+            sys.updates_available.len()
+        );
+    }
     let mut svcs = plan.services.clone();
     if !plan.user_services.is_empty() {
         svcs.push("audio (PipeWire, --user)".into());
     }
-    println!("  Servicios      : {}", join_or_none(&svcs));
+    println!("  Servicios      : {}", format_list_or_none(&svcs));
 
-    let mut sys = Vec::new();
-    if let Some(v) = &plan.locale {
-        sys.push(format!("locale={v}"));
-    }
-    if let Some(v) = &plan.timezone {
-        sys.push(format!("tz={v}"));
-    }
-    if let Some(v) = &plan.keymap {
-        sys.push(format!("teclado={v}"));
-    }
-    if let Some(v) = &plan.hostname {
-        sys.push(format!("host={v}"));
-    }
-    if plan.enable_multilib {
-        sys.push("multilib".into());
-    }
-    if plan.reboot_after {
-        sys.push("reiniciar".into());
-    }
-    if !sys.is_empty() {
-        println!("  Sistema        : {}", sys.join(", "));
+    let sys_settings = format_system_settings(
+        plan.locale.as_deref(),
+        plan.timezone.as_deref(),
+        plan.keymap.as_deref(),
+        plan.hostname.as_deref(),
+        plan.enable_multilib,
+        plan.reboot_after,
+        SystemLabelStyle::Detailed,
+    );
+    if !sys_settings.is_empty() {
+        println!("  Sistema        : {}", sys_settings.join(", "));
     }
     println!();
 }
 
-fn join_or_none(items: &[String]) -> String {
-    if items.is_empty() {
-        "(ninguno)".to_string()
-    } else {
-        items.join(", ")
+/// Construye las opciones del instalador, incluyendo los paquetes que ya
+/// estan en el sistema (se omiten en vez de reinstalarse).
+fn make_options(cli: &Cli, sys: &SystemStatus) -> InstallOptions {
+    InstallOptions {
+        dry_run: cli.dry_run,
+        noconfirm: cli.yes,
+        skip_official: sys.official.clone(),
+        skip_aur: sys.aur.clone(),
     }
 }
 
@@ -159,7 +185,8 @@ fn run_plan(plan: InstallPlan, cli: &Cli, already_confirmed: bool) -> Result<()>
         return Ok(());
     }
 
-    show_plan(&plan);
+    let sys = SystemStatus::detect();
+    show_plan(&plan, &sys);
 
     if installer::is_root() {
         eprintln!("Advertencia: estas corriendo como root. makepkg/yay no deben usarse como root.");
@@ -171,10 +198,7 @@ fn run_plan(plan: InstallPlan, cli: &Cli, already_confirmed: bool) -> Result<()>
         return Ok(());
     }
 
-    let opts = InstallOptions {
-        dry_run: cli.dry_run,
-        noconfirm: cli.yes,
-    };
+    let opts = make_options(cli, &sys);
     let mut log = Logger::new();
     log.log(&format!("== arch-postinstall {VERSION} =="));
     let results = installer::execute(&plan, &opts, &mut log);

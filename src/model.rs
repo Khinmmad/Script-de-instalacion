@@ -79,6 +79,82 @@ pub struct InstallPlan {
     pub reboot_after: bool,
 }
 
+/// Une una lista para mostrarla. Si esta vacia devuelve `(ninguno)` para
+/// que el usuario vea explicitamente que no hay nada seleccionado.
+pub fn format_list_or_none(items: &[String]) -> String {
+    if items.is_empty() {
+        "(ninguno)".to_string()
+    } else {
+        items.join(", ")
+    }
+}
+
+/// Estilo de etiquetas para los ajustes del sistema. Usado por la TUI, la
+/// pantalla de revision y la salida CLI para que las tres vistas digan lo
+/// mismo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemLabelStyle {
+    /// Palabras sueltas: `locale`, `zona`, `teclado`, `hostname`, `multilib`,
+    /// `reiniciar`. Pensado para el menu principal donde el espacio es corto.
+    Short,
+    /// Parejas `clave=valor` para el resto de campos: `locale=es_MX`,
+    /// `zona=America/...`, etc. Los flags van igual que en `Short`.
+    Detailed,
+}
+
+/// Devuelve la lista de etiquetas que describen los ajustes del sistema
+/// recibidos. Las opciones vacias no contribuyen; los flags solo aparecen si
+/// estan activos. Centraliza el formato para que la CLI, el menu y la
+/// pantalla de revision nunca se contradigan.
+pub fn format_system_settings(
+    locale: Option<&str>,
+    timezone: Option<&str>,
+    keymap: Option<&str>,
+    hostname: Option<&str>,
+    multilib: bool,
+    reboot: bool,
+    style: SystemLabelStyle,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    match style {
+        SystemLabelStyle::Short => {
+            if locale.is_some() {
+                out.push("locale".into());
+            }
+            if timezone.is_some() {
+                out.push("zona".into());
+            }
+            if keymap.is_some() {
+                out.push("teclado".into());
+            }
+            if hostname.is_some() {
+                out.push("hostname".into());
+            }
+        }
+        SystemLabelStyle::Detailed => {
+            if let Some(v) = locale {
+                out.push(format!("locale={v}"));
+            }
+            if let Some(v) = timezone {
+                out.push(format!("zona={v}"));
+            }
+            if let Some(v) = keymap {
+                out.push(format!("teclado={v}"));
+            }
+            if let Some(v) = hostname {
+                out.push(format!("hostname={v}"));
+            }
+        }
+    }
+    if multilib {
+        out.push("multilib".into());
+    }
+    if reboot {
+        out.push("reiniciar".into());
+    }
+    out
+}
+
 impl InstallPlan {
     /// Construye un plan derivando automaticamente los servicios a habilitar
     /// a partir de los paquetes elegidos y el display manager. Los ajustes del

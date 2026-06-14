@@ -4,6 +4,7 @@
 //! falla NO aborta el resto. Cada paso se registra en un log y al final se
 //! muestra un resumen de exitos y fallos.
 
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -33,10 +34,16 @@ impl Logger {
                 file: Some(file),
                 path: Some(path),
             },
-            Err(_) => Logger {
-                file: None,
-                path: None,
-            },
+            Err(e) => {
+                eprintln!(
+                    "Aviso: no se pudo abrir el archivo de log ({e}); \
+                     la salida ira solo a la terminal."
+                );
+                Logger {
+                    file: None,
+                    path: None,
+                }
+            }
         }
     }
 
@@ -68,11 +75,30 @@ impl Default for Logger {
 }
 
 /// Opciones de ejecucion del instalador.
+#[derive(Default)]
 pub struct InstallOptions {
     /// No ejecuta nada; solo muestra los comandos que correria.
     pub dry_run: bool,
     /// Evita preguntas de pacman/yay (--noconfirm).
     pub noconfirm: bool,
+    /// Paquetes oficiales que ya estan en el sistema: el instalador los
+    /// salta sin invocar pacman, en vez de confiar en `--needed`.
+    pub skip_official: HashSet<String>,
+    /// Paquetes del AUR que ya estan en el sistema: el instalador los
+    /// salta sin invocar yay.
+    pub skip_aur: HashSet<String>,
+}
+
+impl InstallOptions {
+    /// `true` si el paquete `pkg` (del gestor `manager`) ya esta instalado
+    /// y debe saltarse.
+    pub fn should_skip(&self, manager: &str, pkg: &str) -> bool {
+        if manager == "pacman" {
+            self.skip_official.contains(pkg)
+        } else {
+            self.skip_aur.contains(pkg)
+        }
+    }
 }
 
 /// Indica si el binario corre como root (no recomendado para makepkg/yay).
@@ -96,7 +122,7 @@ pub fn is_root() -> bool {
 }
 
 /// True si `yay` ya esta instalado en el PATH.
-pub fn yay_present() -> bool {
+fn yay_present() -> bool {
     Command::new("yay")
         .arg("--version")
         .output()
@@ -170,6 +196,18 @@ fn ensure_yay(log: &mut Logger, opts: &InstallOptions) -> bool {
 
 /// Instala un solo paquete con el gestor indicado. Devuelve StepResult.
 fn install_one(log: &mut Logger, opts: &InstallOptions, manager: &str, pkg: &str) -> StepResult {
+    // Si el sistema ya tiene el paquete, lo saltamos sin invocar al gestor.
+    // Asi evitamos ruido en el log y el (pequeno) coste de pacman/yay
+    // haciendo un no-op. Tambien hace explicito en el resumen lo que se
+    // ahorro: el usuario ve "saltado" en vez de un exito rapido.
+    if opts.should_skip(manager, pkg) {
+        log.log(&format!("  ↪ {pkg} ya esta instalado, se omite"));
+        return StepResult {
+            label: format!("{manager}: {pkg} (ya instalado)"),
+            ok: true,
+        };
+    }
+
     let mut args: Vec<&str> = vec!["-S", "--needed"];
     if opts.noconfirm {
         args.push("--noconfirm");
@@ -218,28 +256,43 @@ fn temp_path(prefix: &str) -> String {
     format!("/tmp/arch-postinstall-{prefix}-{}-{n}", std::process::id())
 }
 
-/// Escribe `content` en un archivo del sistema (vía sudo). Usa un archivo
-/// temporal como intermediario para que el contenido nunca pase por una
-/// shell: asi es seguro aunque contenga comillas, `$`, espacios o saltos de
-/// linea.
-fn write_root_file(log: &mut Logger, opts: &InstallOptions, path: &str, content: &str) -> bool {
+/// Escribe `content` en un archivo temporal y lo copia como root a `dst`
+/// con `sudo install -m <mode>`. El contenido nunca pasa por una shell, asi
+/// que es seguro aunque tenga comillas, `$`, espacios o saltos de linea.
+/// Devuelve `true` si se completo.
+fn sudo_copy_file(
+    log: &mut Logger,
+    opts: &InstallOptions,
+    content: &str,
+    dst: &str,
+    mode: &str,
+    prefix: &str,
+) -> bool {
     if opts.dry_run {
         log.log(&format!(
-            "[dry-run] escribir {} bytes en {path}",
+            "[dry-run] escribir {} bytes en {dst} (modo {mode})",
             content.len()
         ));
         return true;
     }
 
-    let tmp = temp_path("write");
+    let tmp = temp_path(prefix);
     if let Err(e) = fs::write(&tmp, content) {
         log.log(&format!("  ! no se pudo escribir {tmp}: {e}"));
         return false;
     }
 
-    let ok = run(log, opts, "sudo", &["install", "-m", "0644", &tmp, path]);
+    let ok = run(log, opts, "sudo", &["install", "-m", mode, &tmp, dst]);
     let _ = fs::remove_file(&tmp);
     ok
+}
+
+/// Escribe `content` en un archivo del sistema (vía sudo). Usa un archivo
+/// temporal como intermediario para que el contenido nunca pase por una
+/// shell: asi es seguro aunque contenga comillas, `$`, espacios o saltos de
+/// linea.
+fn write_root_file(log: &mut Logger, opts: &InstallOptions, path: &str, content: &str) -> bool {
+    sudo_copy_file(log, opts, content, path, "0644", "write")
 }
 
 /// Descomenta la linea `#<loc> ...` en `/etc/locale.gen` y luego lo deja
@@ -320,19 +373,20 @@ fn append_to_hosts(log: &mut Logger, opts: &InstallOptions, host: &str, line: &s
         return true;
     }
 
-    let tmp = temp_path("hosts");
-    if let Err(e) = fs::write(&tmp, line) {
-        log.log(&format!("  ! no se pudo escribir {tmp}: {e}"));
-        return false;
-    }
-
-    // tmp es una ruta controlada por nosotros (no viene del usuario), asi que
-    // es seguro expandirla en bash. El contenido va por el archivo, no por
-    // la linea de comandos.
-    let cmd = format!("cat {tmp} >> /etc/hosts");
-    let ok = run(log, opts, "sudo", &["bash", "-c", &cmd]);
-    let _ = fs::remove_file(&tmp);
-    ok
+    // Creamos un archivo temporal con el contenido previo de /etc/hosts +
+    // la linea nueva. Asi el contenido nunca pasa por una shell: el comando
+    // sudo solo concatena archivos con `cat origen >> destino`, no expande
+    // variables ni interpreta nada. `host` y `line` ya fueron validados
+    // antes de llegar aqui (validate::is_valid_hostname).
+    let body = match fs::read_to_string("/etc/hosts") {
+        Ok(s) => s,
+        Err(e) => {
+            log.log(&format!("  ! no se pudo leer /etc/hosts: {e}"));
+            return false;
+        }
+    };
+    let merged = format!("{body}{line}");
+    sudo_copy_file(log, opts, &merged, "/etc/hosts", "0644", "hosts")
 }
 
 /// Activa el repositorio [multilib] descomentando su bloque en pacman.conf.

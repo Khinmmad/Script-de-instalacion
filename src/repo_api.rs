@@ -64,7 +64,7 @@ struct AurPackage {
 }
 
 /// Busca en el AUR por nombre y descripcion.
-pub fn search_aur(term: &str) -> Result<Vec<Found>> {
+fn search_aur(term: &str) -> Result<Vec<Found>> {
     let url = format!(
         "https://aur.archlinux.org/rpc/v5/search/{}?by=name-desc",
         url_encode(term)
@@ -99,7 +99,7 @@ struct OfficialPackage {
 }
 
 /// Busca en los repositorios oficiales (core/extra/multilib).
-pub fn search_official(term: &str) -> Result<Vec<Found>> {
+fn search_official(term: &str) -> Result<Vec<Found>> {
     let url = format!(
         "https://archlinux.org/packages/search/json/?q={}",
         url_encode(term)

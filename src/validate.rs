@@ -6,18 +6,25 @@
 //! temporal + sudo), asi que un valor raro no podria causar inyeccion de
 //! comandos aunque se colara por otra via (perfil editado a mano, etc).
 
+/// Todos los bytes de `s` cumplen `class`. Asume `s` no vacio.
+fn ascii_class_ok(s: &str, class: impl Fn(u8) -> bool) -> bool {
+    s.bytes().all(class)
+}
+
+/// `s` no empieza ni termina con el separador `sep`. Asume `s` no vacio.
+fn no_edge_separator(s: &str, sep: u8) -> bool {
+    let b = s.as_bytes();
+    b[0] != sep && b[b.len() - 1] != sep
+}
+
 /// True si `s` es un hostname valido para `/etc/hostname` (RFC 1123
 /// simplificado: letras ASCII, digitos y guiones; no empieza/termina con guion;
 /// max 63 caracteres).
 pub fn is_valid_hostname(s: &str) -> bool {
-    if s.is_empty() || s.len() > 63 {
-        return false;
-    }
-    let bytes = s.as_bytes();
-    if bytes[0] == b'-' || bytes[bytes.len() - 1] == b'-' {
-        return false;
-    }
-    s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    !s.is_empty()
+        && s.len() <= 63
+        && no_edge_separator(s, b'-')
+        && ascii_class_ok(s, |b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 /// True si `s` parece un locale razonable (ej. "es_MX.UTF-8"). No comprueba
@@ -26,33 +33,26 @@ pub fn is_valid_hostname(s: &str) -> bool {
 pub fn is_valid_locale(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 60
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-')
+        && ascii_class_ok(s, |b| {
+            b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-'
+        })
 }
 
 /// True si `s` parece un keymap de consola valido (ej. "la-latin1", "es").
 pub fn is_valid_keymap(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 50
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        && ascii_class_ok(s, |b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// True si `s` parece una zona horaria IANA valida (ej. "America/Mexico_City").
 /// No comprueba que el archivo exista bajo `/usr/share/zoneinfo/`.
 pub fn is_valid_timezone(s: &str) -> bool {
-    if s.is_empty() || s.len() > 60 {
-        return false;
-    }
-    let bytes = s.as_bytes();
-    if bytes[0] == b'/' || bytes[bytes.len() - 1] == b'/' {
-        return false;
-    }
-    if s.contains("//") {
-        return false;
-    }
-    s.bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'/')
+    !s.is_empty()
+        && s.len() <= 60
+        && no_edge_separator(s, b'/')
+        && !s.contains("//")
+        && ascii_class_ok(s, |b| b.is_ascii_alphanumeric() || b == b'_' || b == b'/')
 }
 
 #[cfg(test)]

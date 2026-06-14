@@ -13,7 +13,10 @@ use ratatui::{
 };
 
 use crate::catalog::{BASE_PACKAGES, DESKTOP_ENVIRONMENTS, DRIVERS, EXTRA_PACKAGES};
-use crate::model::{InstallPlan, Profile, Source};
+use crate::detect::SystemStatus;
+use crate::model::{
+    format_list_or_none, format_system_settings, InstallPlan, Profile, Source, SystemLabelStyle,
+};
 use crate::{profile, repo_api, validate};
 
 /// Un paquete seleccionable (curado o anadido por busqueda).
@@ -22,6 +25,10 @@ struct PkgItem {
     name: String,
     description: String,
     selected: bool,
+    /// `true` si el paquete ya esta instalado en el sistema. Solo afecta a
+    /// como se muestra; el instalador filtra los ya instalados para no
+    /// reinstalarlos.
+    installed: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -85,10 +92,17 @@ struct App {
     de_index: usize,
     /// Marcado/no marcado, paralelo a `catalog::DRIVERS`.
     drivers: Vec<bool>,
+    /// `installed` paralelo a `catalog::DRIVERS` (todos los paquetes del
+    /// driver ya estan en el sistema).
+    drivers_installed: Vec<bool>,
     official: Vec<PkgItem>,
     aur: Vec<PkgItem>,
     list_cursor: usize,
     status: String,
+
+    // Estado del sistema (paquetes instalados, servicios, configs). Se
+    // detecta una sola vez al iniciar la TUI.
+    sys_state: SystemStatus,
 
     // Busqueda
     search_source: Source,
@@ -112,36 +126,77 @@ struct App {
 
 impl App {
     fn new() -> Self {
+        let sys_state = SystemStatus::detect();
+
         let official = EXTRA_PACKAGES
             .iter()
             .filter(|p| p.source == Source::Official)
-            .map(|p| PkgItem {
-                name: p.name.to_string(),
-                description: p.description.to_string(),
-                selected: p.default_on,
+            .map(|p| {
+                let installed = matches!(
+                    sys_state.package_status(p.name, Source::Official),
+                    crate::detect::PackageStatus::Installed
+                );
+                PkgItem {
+                    name: p.name.to_string(),
+                    description: p.description.to_string(),
+                    selected: p.default_on,
+                    installed,
+                }
             })
             .collect();
         let aur = EXTRA_PACKAGES
             .iter()
             .filter(|p| p.source == Source::Aur)
-            .map(|p| PkgItem {
-                name: p.name.to_string(),
-                description: p.description.to_string(),
-                selected: p.default_on,
+            .map(|p| {
+                let installed = matches!(
+                    sys_state.package_status(p.name, Source::Aur),
+                    crate::detect::PackageStatus::Installed
+                );
+                PkgItem {
+                    name: p.name.to_string(),
+                    description: p.description.to_string(),
+                    selected: p.default_on,
+                    installed,
+                }
             })
             .collect();
 
         let drivers = DRIVERS.iter().map(|d| d.default_on).collect();
+        let drivers_installed: Vec<bool> = DRIVERS
+            .iter()
+            .map(|d| {
+                // Un driver se considera "ya instalado" si todos sus
+                // paquetes oficiales estan en el sistema.
+                d.packages.iter().all(|p| {
+                    matches!(
+                        sys_state.package_status(p, Source::Official),
+                        crate::detect::PackageStatus::Installed
+                    )
+                })
+            })
+            .collect();
+
+        // Pre-rellena el formulario con la configuracion actual del sistema
+        // para que el usuario solo tenga que tocar lo que quiera cambiar.
+        // Los campos vacios quedan vacios (que ya significa "no tocar").
+        let sys_locale = sys_state.locale.clone().unwrap_or_default();
+        let sys_timezone = sys_state.timezone.clone().unwrap_or_default();
+        let sys_keymap = sys_state.keymap.clone().unwrap_or_default();
+        let sys_hostname = sys_state.hostname.clone().unwrap_or_default();
+        let sys_multilib = sys_state.multilib_enabled;
+        let sys_reboot = false;
 
         App {
             mode: Mode::Welcome,
             main_cursor: 0,
             de_index: 0,
             drivers,
+            drivers_installed,
             official,
             aur,
             list_cursor: 0,
             status: "Usa ↑/↓ y Enter. En esta pantalla 'Instalar ahora' lanza todo.".into(),
+            sys_state,
             search_source: Source::Official,
             search_input: String::new(),
             search_results: Vec::new(),
@@ -149,12 +204,12 @@ impl App {
             profiles: Vec::new(),
             name_input: String::new(),
             sys_cursor: 0,
-            sys_locale: String::new(),
-            sys_timezone: String::new(),
-            sys_keymap: String::new(),
-            sys_hostname: String::new(),
-            sys_multilib: false,
-            sys_reboot: false,
+            sys_locale,
+            sys_timezone,
+            sys_keymap,
+            sys_hostname,
+            sys_multilib,
+            sys_reboot,
         }
     }
 
@@ -224,26 +279,22 @@ impl App {
     }
 
     /// Resumen corto de los ajustes del sistema para el menu principal.
+    /// Solo considera los campos que tengan un valor (aunque sea invalido),
+    /// para que el usuario vea "esto es lo que rellene".
     fn system_summary(&self) -> String {
-        let mut parts = Vec::new();
-        if !self.sys_locale.trim().is_empty() {
-            parts.push("locale");
-        }
-        if !self.sys_timezone.trim().is_empty() {
-            parts.push("zona");
-        }
-        if !self.sys_keymap.trim().is_empty() {
-            parts.push("teclado");
-        }
-        if !self.sys_hostname.trim().is_empty() {
-            parts.push("hostname");
-        }
-        if self.sys_multilib {
-            parts.push("multilib");
-        }
-        if self.sys_reboot {
-            parts.push("reiniciar");
-        }
+        let locale = nonempty(&self.sys_locale);
+        let timezone = nonempty(&self.sys_timezone);
+        let keymap = nonempty(&self.sys_keymap);
+        let hostname = nonempty(&self.sys_hostname);
+        let parts = format_system_settings(
+            locale.as_deref(),
+            timezone.as_deref(),
+            keymap.as_deref(),
+            hostname.as_deref(),
+            self.sys_multilib,
+            self.sys_reboot,
+            SystemLabelStyle::Short,
+        );
         parts.join(", ")
     }
 
@@ -256,32 +307,42 @@ impl App {
         } else {
             self.de_index = 0;
         }
-        // Desmarca todo y luego marca lo del perfil, anadiendo lo que falte.
-        for it in self.official.iter_mut() {
-            it.selected = p.official_packages.contains(&it.name);
-        }
-        for name in &p.official_packages {
-            if !self.official.iter().any(|i| &i.name == name) {
-                self.official.push(PkgItem {
-                    name: name.clone(),
-                    description: "(del perfil)".into(),
-                    selected: true,
-                });
-            }
-        }
-        for it in self.aur.iter_mut() {
-            it.selected = p.aur_packages.contains(&it.name);
-        }
-        for name in &p.aur_packages {
-            if !self.aur.iter().any(|i| &i.name == name) {
-                self.aur.push(PkgItem {
-                    name: name.clone(),
-                    description: "(del perfil)".into(),
-                    selected: true,
-                });
-            }
-        }
+        merge_profile_into(
+            &mut self.official,
+            &p.official_packages,
+            Source::Official,
+            &self.sys_state,
+        );
+        merge_profile_into(&mut self.aur, &p.aur_packages, Source::Aur, &self.sys_state);
         self.status = format!("Perfil '{}' cargado.", p.name);
+    }
+}
+
+/// Sincroniza la seleccion de `items` con los nombres de `names`:
+/// los del catalogo quedan marcados segun aparezcan o no en `names`, y los
+/// que estan en `names` pero no en el catalogo se anaden marcados.
+/// `src` se usa para consultar el estado del sistema y marcar como
+/// instalados los nuevos que ya esten en la maquina.
+fn merge_profile_into(items: &mut Vec<PkgItem>, names: &[String], src: Source, sys: &SystemStatus) {
+    for it in items.iter_mut() {
+        it.selected = names.contains(&it.name);
+    }
+    let to_add: Vec<String> = names
+        .iter()
+        .filter(|n| !items.iter().any(|i| &i.name == *n))
+        .cloned()
+        .collect();
+    for name in to_add {
+        let installed = matches!(
+            sys.package_status(&name, src),
+            crate::detect::PackageStatus::Installed
+        );
+        items.push(PkgItem {
+            name,
+            description: "(del perfil)".into(),
+            selected: true,
+            installed,
+        });
     }
 }
 
@@ -312,7 +373,7 @@ fn nonempty(s: &str) -> Option<String> {
 }
 
 /// Anade o alterna un paquete en una lista por nombre. Devuelve si quedo activo.
-fn toggle_into(vec: &mut Vec<PkgItem>, name: &str, desc: &str) -> bool {
+fn toggle_into(vec: &mut Vec<PkgItem>, name: &str, desc: &str, installed: bool) -> bool {
     if let Some(it) = vec.iter_mut().find(|p| p.name == name) {
         it.selected = !it.selected;
         it.selected
@@ -321,6 +382,7 @@ fn toggle_into(vec: &mut Vec<PkgItem>, name: &str, desc: &str) -> bool {
             name: name.to_string(),
             description: desc.to_string(),
             selected: true,
+            installed,
         });
         true
     }
@@ -404,6 +466,7 @@ pub fn run() -> Result<Outcome> {
                     };
                 }
                 KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Main,
+                KeyCode::Char('s') => break Outcome::Cancelled,
                 _ => {}
             },
         }
@@ -426,10 +489,17 @@ fn handle_text_submit(app: &mut App) {
                 Ok(found) => {
                     app.search_results = found
                         .into_iter()
-                        .map(|f| PkgItem {
-                            name: f.name,
-                            description: f.description,
-                            selected: false,
+                        .map(|f| {
+                            let installed = matches!(
+                                app.sys_state.package_status(&f.name, app.search_source),
+                                crate::detect::PackageStatus::Installed
+                            );
+                            PkgItem {
+                                name: f.name,
+                                description: f.description,
+                                selected: false,
+                                installed,
+                            }
                         })
                         .collect();
                     app.list_cursor = 0;
@@ -644,7 +714,7 @@ fn handle_search(app: &mut App, code: KeyCode) {
                     Source::Official => &mut app.official,
                     Source::Aur => &mut app.aur,
                 };
-                let now_on = toggle_into(target, &res.name, &res.description);
+                let now_on = toggle_into(target, &res.name, &res.description, res.installed);
                 if let Some(r) = app.search_results.get_mut(app.list_cursor) {
                     r.selected = now_on;
                 }
@@ -841,16 +911,36 @@ fn draw_main(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_system(f: &mut Frame, area: Rect, app: &App) {
-    // Cada campo de texto: (etiqueta, valor, ejemplo).
+    // Cada campo de texto: (etiqueta, valor, ejemplo, ya configurado).
     let fields = [
-        ("Locale", &app.sys_locale, "es_MX.UTF-8"),
-        ("Zona horaria", &app.sys_timezone, "America/Mexico_City"),
-        ("Teclado (consola)", &app.sys_keymap, "la-latin1"),
-        ("Hostname", &app.sys_hostname, "mi-arch"),
+        (
+            "Locale",
+            &app.sys_locale,
+            "es_MX.UTF-8",
+            app.sys_state.locale.is_some(),
+        ),
+        (
+            "Zona horaria",
+            &app.sys_timezone,
+            "America/Mexico_City",
+            app.sys_state.timezone.is_some(),
+        ),
+        (
+            "Teclado (consola)",
+            &app.sys_keymap,
+            "la-latin1",
+            app.sys_state.keymap.is_some(),
+        ),
+        (
+            "Hostname",
+            &app.sys_hostname,
+            "mi-arch",
+            app.sys_state.hostname.is_some(),
+        ),
     ];
 
     let mut lines = vec![Line::from("")];
-    for (i, (label, value, example)) in fields.iter().enumerate() {
+    for (i, (label, value, example, already_set)) in fields.iter().enumerate() {
         let focused = app.sys_cursor == i;
         let editing = focused && app.typing;
         let prefix = if focused { "➤ " } else { "  " };
@@ -870,6 +960,11 @@ fn draw_system(f: &mut Frame, area: Rect, app: &App) {
             Style::default()
         };
         let cursor = if editing { "_" } else { "" };
+        let already = if *already_set && !editing {
+            Span::styled("  (actual)", Style::default().fg(Color::DarkGray))
+        } else {
+            Span::raw("")
+        };
         lines.push(Line::from(vec![
             Span::styled(prefix, Style::default().fg(Color::Cyan)),
             Span::styled(
@@ -878,13 +973,19 @@ fn draw_system(f: &mut Frame, area: Rect, app: &App) {
             ),
             shown,
             Span::styled(cursor.to_string(), value_style),
+            already,
         ]));
     }
 
     // Toggles.
-    let toggle_line = |idx: usize, label: &str, on: bool, cursor: usize| {
+    let toggle_line = |idx: usize, label: &str, on: bool, cursor: usize, note: &str| {
         let prefix = if cursor == idx { "➤ " } else { "  " };
         let box_ = if on { "[x]" } else { "[ ]" };
+        let note_span = if on && !note.is_empty() {
+            Span::styled(format!("  ({note})"), Style::default().fg(Color::DarkGray))
+        } else {
+            Span::raw("")
+        };
         Line::from(vec![
             Span::styled(prefix, Style::default().fg(Color::Cyan)),
             Span::styled(
@@ -895,6 +996,7 @@ fn draw_system(f: &mut Frame, area: Rect, app: &App) {
                 label.to_string(),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
+            note_span,
         ])
     };
     lines.push(Line::from(""));
@@ -903,12 +1005,18 @@ fn draw_system(f: &mut Frame, area: Rect, app: &App) {
         "Habilitar repositorio multilib (Steam, libs 32-bit)",
         app.sys_multilib,
         app.sys_cursor,
+        if app.sys_state.multilib_enabled {
+            "ya habilitado"
+        } else {
+            ""
+        },
     ));
     lines.push(toggle_line(
         SYS_REBOOT,
         "Reiniciar automaticamente al terminar",
         app.sys_reboot,
         app.sys_cursor,
+        "",
     ));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
@@ -930,19 +1038,38 @@ fn draw_drivers(f: &mut Frame, area: Rect, app: &App) {
         .enumerate()
         .map(|(i, d)| {
             let on = app.drivers.get(i).copied().unwrap_or(false);
+            let installed = app.drivers_installed.get(i).copied().unwrap_or(false);
             let checkbox = if on { "[x] " } else { "[ ] " };
             let cb_style = if on {
                 Style::default().fg(Color::Green)
             } else {
                 Style::default().fg(Color::DarkGray)
             };
+            let installed_span = if installed {
+                Span::styled(
+                    "✓ ",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::raw("  ")
+            };
+            let label_style = if installed {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default().add_modifier(Modifier::BOLD)
+            };
+            let pkg_color = if installed {
+                Color::DarkGray
+            } else {
+                Color::Gray
+            };
             ListItem::new(Line::from(vec![
                 Span::styled(checkbox, cb_style),
-                Span::styled(
-                    format!("{:<40}", d.label),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(d.packages.join(" "), Style::default().fg(Color::Gray)),
+                installed_span,
+                Span::styled(format!("{:<40}", d.label), label_style),
+                Span::styled(d.packages.join(" "), Style::default().fg(pkg_color)),
             ]))
         })
         .collect();
@@ -996,15 +1123,33 @@ fn package_item(p: &PkgItem) -> ListItem<'_> {
     } else {
         Style::default().fg(Color::DarkGray)
     };
+    let installed_span = if p.installed {
+        Span::styled(
+            "✓ ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::raw("  ")
+    };
+    let name_style = if p.installed {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default().add_modifier(Modifier::BOLD)
+    };
+    let desc_color = if p.installed {
+        Color::DarkGray
+    } else {
+        Color::Gray
+    };
     ListItem::new(Line::from(vec![
         Span::styled(checkbox, cb_style),
-        Span::styled(
-            format!("{:<28}", p.name),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
+        installed_span,
+        Span::styled(format!("{:<28}", p.name), name_style),
         Span::styled(
             truncate(&p.description, 60),
-            Style::default().fg(Color::Gray),
+            Style::default().fg(desc_color),
         ),
     ]))
 }
@@ -1107,14 +1252,40 @@ fn draw_save_profile(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_review(f: &mut Frame, area: Rect, app: &App) {
     let plan = app.build_plan();
-    let de = &DESKTOP_ENVIRONMENTS[app.de_index];
 
-    let mut lines = vec![
-        Line::from(""),
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+    lines.extend(review_env_section(&plan));
+    lines.push(Line::from(""));
+    lines.extend(review_packages_section(&plan, &app.sys_state));
+    lines.extend(review_system_section(&plan));
+    lines.push(Line::from(""));
+    lines.push(review_footer());
+
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Revision del plan "),
+    );
+    f.render_widget(p, area);
+}
+
+/// Lineas con el entorno elegido y su display manager.
+fn review_env_section(plan: &InstallPlan) -> Vec<Line<'static>> {
+    let de_label = plan
+        .desktop_env_id
+        .as_deref()
+        .map(lookup_de_label)
+        .unwrap_or("(ninguno)");
+    let dm = plan
+        .display_manager
+        .clone()
+        .unwrap_or_else(|| "ninguno".into());
+    vec![
         Line::from(vec![
             Span::raw("  Entorno de escritorio:  "),
             Span::styled(
-                de.label,
+                de_label.to_string(),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -1122,87 +1293,146 @@ fn draw_review(f: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(vec![
             Span::raw("  Display manager:        "),
-            Span::styled(
-                plan.display_manager
-                    .clone()
-                    .unwrap_or_else(|| "ninguno".into()),
-                Style::default().fg(Color::Cyan),
-            ),
+            Span::styled(dm, Style::default().fg(Color::Cyan)),
         ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                format!("  Oficiales ({}):  ", plan.official.len()),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                join_wrapped(&plan.official),
-                Style::default().fg(Color::Gray),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                format!("  AUR ({}):  ", plan.aur.len()),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(join_wrapped(&plan.aur), Style::default().fg(Color::Gray)),
-        ]),
-        Line::from(""),
-    ];
+    ]
+}
 
-    // Servicios que se habilitaran para dejar el sistema listo para usar.
-    let mut svcs = plan.services.clone();
-    if !plan.user_services.is_empty() {
-        svcs.push("audio (PipeWire, --user)".into());
-    }
-    lines.push(Line::from(vec![
+/// Paquetes y servicios, separados en "por instalar" y "ya instalado"
+/// usando la deteccion del sistema. El resumen indica cuantos hay en cada
+/// lado para que el usuario vea de un vistazo cuanto trabajo queda.
+fn review_packages_section(plan: &InstallPlan, sys: &SystemStatus) -> Vec<Line<'static>> {
+    let (off_to_install, off_have): (Vec<String>, Vec<String>) = plan
+        .official
+        .iter()
+        .cloned()
+        .partition(|p| !sys.official.contains(p) && !sys.aur.contains(p));
+    let (aur_to_install, aur_have): (Vec<String>, Vec<String>) = plan
+        .aur
+        .iter()
+        .cloned()
+        .partition(|p| !sys.official.contains(p) && !sys.aur.contains(p));
+
+    let mut out = Vec::new();
+
+    out.push(Line::from(vec![
         Span::styled(
-            "  Servicios a habilitar:  ",
+            format!(
+                "  Por instalar ({}):  ",
+                off_to_install.len() + aur_to_install.len()
+            ),
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(join_wrapped(&svcs), Style::default().fg(Color::Gray)),
+        Span::styled(
+            join_with_source(&off_to_install, &aur_to_install),
+            Style::default().fg(Color::Gray),
+        ),
     ]));
-    lines.push(Line::from(Span::styled(
-        "  (systemctl enable: el equipo arranca listo para usarse)",
-        Style::default().fg(Color::DarkGray),
-    )));
-
-    // Ajustes del sistema, si los hay.
-    let mut sys = Vec::new();
-    if let Some(v) = &plan.locale {
-        sys.push(format!("locale={v}"));
-    }
-    if let Some(v) = &plan.timezone {
-        sys.push(format!("zona={v}"));
-    }
-    if let Some(v) = &plan.keymap {
-        sys.push(format!("teclado={v}"));
-    }
-    if let Some(v) = &plan.hostname {
-        sys.push(format!("host={v}"));
-    }
-    if plan.enable_multilib {
-        sys.push("multilib".into());
-    }
-    if plan.reboot_after {
-        sys.push("reiniciar al terminar".into());
-    }
-    if !sys.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled(
-                "  Sistema:  ",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
+    if off_to_install.is_empty() && aur_to_install.is_empty() {
+        out.push(Line::from(Span::styled(
+            "    (todo lo del plan ya esta instalado; pacman -Syu actualizara si hay algo pendiente)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else if !sys.updates_available.is_empty() {
+        out.push(Line::from(Span::styled(
+            format!(
+                "    (ademas hay {} paquete(s) con actualizacion disponible en el sistema)",
+                sys.updates_available.len()
             ),
-            Span::styled(sys.join(", "), Style::default().fg(Color::Gray)),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    out.push(Line::from(""));
+
+    out.push(Line::from(vec![
+        Span::styled(
+            format!("  Ya instalado ({}):  ", off_have.len() + aur_have.len()),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            join_with_source(&off_have, &aur_have),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+    out.push(Line::from(""));
+
+    let mut svcs = plan.services.clone();
+    if !plan.user_services.is_empty() {
+        svcs.push("audio (PipeWire, --user)".into());
+    }
+    let (svcs_to_enable, svcs_already): (Vec<String>, Vec<String>) = svcs
+        .iter()
+        .cloned()
+        .partition(|s| !matches!(sys.service_status(s), crate::detect::ServiceStatus::Enabled));
+    out.push(Line::from(vec![
+        Span::styled(
+            format!("  Servicios a habilitar ({}):  ", svcs_to_enable.len()),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format_list_or_none(&svcs_to_enable),
+            Style::default().fg(Color::Gray),
+        ),
+    ]));
+    if !svcs_already.is_empty() {
+        out.push(Line::from(vec![
+            Span::styled(
+                format!("  Servicios ya activos ({}):  ", svcs_already.len()),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                format_list_or_none(&svcs_already),
+                Style::default().fg(Color::DarkGray),
+            ),
         ]));
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
+    out
+}
+
+/// Junta dos listas (oficial + AUR) en una sola linea con un sufijo `(aur)`
+/// en los del AUR, para que el usuario distinga el origen sin perder la
+/// lista compacta.
+fn join_with_source(official: &[String], aur: &[String]) -> String {
+    let mut parts: Vec<String> = official.to_vec();
+    for a in aur {
+        parts.push(format!("{a} (aur)"));
+    }
+    format_list_or_none(&parts)
+}
+
+/// Lineas con locale/zona/teclado/hostname/multilib/reiniciar, o vacias si
+/// el usuario no toco ninguno de esos campos.
+fn review_system_section(plan: &InstallPlan) -> Vec<Line<'static>> {
+    let sys = format_system_settings(
+        plan.locale.as_deref(),
+        plan.timezone.as_deref(),
+        plan.keymap.as_deref(),
+        plan.hostname.as_deref(),
+        plan.enable_multilib,
+        plan.reboot_after,
+        SystemLabelStyle::Detailed,
+    );
+    if sys.is_empty() {
+        return Vec::new();
+    }
+    vec![Line::from(vec![
+        Span::styled(
+            "  Sistema:  ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(sys.join(", "), Style::default().fg(Color::Gray)),
+    ])]
+}
+
+/// Pie con los atajos de teclado de la pantalla de revision.
+fn review_footer() -> Line<'static> {
+    Line::from(vec![
         Span::raw("  "),
         Span::styled(
             "Enter",
@@ -1215,23 +1445,25 @@ fn draw_review(f: &mut Frame, area: Rect, app: &App) {
             "Esc",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" vuelve al menu"),
-    ]));
-
-    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Revision del plan "),
-    );
-    f.render_widget(p, area);
+        Span::raw(" vuelve al menu  ·  "),
+        Span::styled(
+            "s",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" salir sin hacer nada"),
+    ])
 }
 
-fn join_wrapped(items: &[String]) -> String {
-    if items.is_empty() {
-        "(ninguno)".to_string()
-    } else {
-        items.join(", ")
-    }
+/// Busca la etiqueta legible de un entorno de escritorio a partir de su id.
+/// Si no se encuentra, devuelve el id tal cual.
+fn lookup_de_label(id: &str) -> &str {
+    DESKTOP_ENVIRONMENTS
+        .iter()
+        .find(|d| d.id == id)
+        .map(|d| d.label)
+        .unwrap_or(id)
 }
 
 fn render_list(f: &mut Frame, area: Rect, items: Vec<ListItem>, cursor: usize, title: &str) {
@@ -1261,7 +1493,7 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         Mode::System => "↑/↓: campo · Enter/i: editar · Space: marcar · q: menu",
         Mode::LoadProfile => "↑/↓: mover · Enter: cargar · q: menu",
         Mode::SaveProfile => "Escribe el nombre · Enter: guardar · Esc: cancelar",
-        Mode::Review => "Enter: confirmar e instalar · Esc: volver al menu",
+        Mode::Review => "Enter: instalar · s: salir sin hacer nada · Esc: volver al menu",
         _ => "↑/↓: mover · Space: marcar · q: volver al menu",
     };
     let text = vec![
