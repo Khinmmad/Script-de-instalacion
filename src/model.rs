@@ -106,12 +106,15 @@ pub struct GrubConfig {
     /// GRUB_TIMEOUT en segundos. `None` = no tocar.
     /// 0 = sin menu (boot instantaneo).
     /// 5 = default de Arch.
+    #[serde(default)]
     pub timeout: Option<i32>,
     /// `GRUB_DEFAULT=saved` + `GRUB_SAVEDEFAULT=true`. Recuerda la
     /// ultima opcion arrancada.
+    #[serde(default)]
     pub saved_default: bool,
     /// `GRUB_GFXMODE=auto`. Pide a GRUB autodetectar la resolucion
     /// en vez de usar la default.
+    #[serde(default)]
     pub gfxmode_auto: bool,
 }
 

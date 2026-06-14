@@ -28,12 +28,19 @@ use crate::estimate::PlanEstimate;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputFormat {
+    Text,
+    Json,
+}
+
 struct Cli {
     dry_run: bool,
     yes: bool,
     profile: Option<String>,
     list_profiles: bool,
     validate_profile: Option<String>,
+    format: OutputFormat,
     help: bool,
     version: bool,
 }
@@ -45,6 +52,7 @@ fn parse_args() -> Cli {
         profile: None,
         list_profiles: false,
         validate_profile: None,
+        format: OutputFormat::Text,
         help: false,
         version: false,
     };
@@ -58,6 +66,18 @@ fn parse_args() -> Cli {
             "--version" | "-V" => cli.version = true,
             "--profile" | "-p" => cli.profile = args.next(),
             "--validate-profile" => cli.validate_profile = args.next(),
+            "--format" => match args.next().as_deref() {
+                Some("text") => cli.format = OutputFormat::Text,
+                Some("json") => cli.format = OutputFormat::Json,
+                Some(other) => {
+                    eprintln!("Formato desconocido: {other} (usa 'text' o 'json')");
+                    cli.help = true;
+                }
+                None => {
+                    eprintln!("Falta el valor de --format");
+                    cli.help = true;
+                }
+            },
             other => {
                 eprintln!("Argumento desconocido: {other}\n");
                 cli.help = true;
@@ -84,6 +104,9 @@ OPCIONES:
                               Comprueba formato de campos y existencia
                               de paquetes. Sale 0 si todo OK, 1 si hay
                               paquetes faltantes o campos invalidos.
+        --format <text|json>  Formato de salida para show_plan y
+                              validate-profile. Por defecto 'text'.
+                              'json' es util para scripts/CI.
     -n, --dry-run             Muestra lo que haria sin ejecutar nada.
     -y, --yes                 No preguntar confirmacion (usa --noconfirm).
     -h, --help                Muestra esta ayuda.
@@ -208,6 +231,94 @@ fn show_plan(plan: &InstallPlan, sys: &SystemStatus) {
     println!();
 }
 
+/// Construye e imprime el plan en formato JSON. Pensado para
+/// scripts y CI que quieren consumir el plan sin parsear texto.
+fn show_plan_json(plan: &InstallPlan, sys: &SystemStatus) {
+    use serde_json::json;
+
+    // Particion oficial/AUR en 'a instalar' y 'ya instalado'.
+    let mut off_to_install = Vec::new();
+    let mut off_have = Vec::new();
+    for p in &plan.official {
+        if sys.official.contains(p) || sys.aur.contains(p) {
+            off_have.push(p);
+        } else {
+            off_to_install.push(p);
+        }
+    }
+    let mut aur_to_install = Vec::new();
+    let mut aur_have = Vec::new();
+    for p in &plan.aur {
+        if sys.official.contains(p) || sys.aur.contains(p) {
+            aur_have.push(p);
+        } else {
+            aur_to_install.push(p);
+        }
+    }
+
+    // Servicios (juntamos DM + servicios de sistema + audio user).
+    let mut svcs = plan.services.clone();
+    if !plan.user_services.is_empty() {
+        svcs.push("audio (PipeWire, --user)".into());
+    }
+
+    // Estimacion de espacio.
+    let est = estimate::estimate(&plan.official, &plan.aur, &sys.official, &sys.aur);
+    let estimate_json = json!({
+        "download_bytes": est.total_download(),
+        "install_bytes": est.total_install(),
+        "free_bytes": est.free_bytes,
+        "fits": est.fits(),
+        "unknown_packages": est.total_unknown(),
+    });
+
+    // Sistema: campos opcionales van como Option<...>; serde_json
+    // emite null para None, lo cual es comodo para scripts.
+    let system_json = json!({
+        "locale": plan.locale,
+        "timezone": plan.timezone,
+        "keymap": plan.keymap,
+        "hostname": plan.hostname,
+        "mirror_region": plan.mirror_region,
+        "enable_multilib": plan.enable_multilib,
+        "reboot_after": plan.reboot_after,
+        "cleanup_orphans": plan.cleanup_orphans,
+    });
+
+    // Grub config: timeout es Option<i32>, gfxmode_auto/saved son
+    // bool. Para que el JSON sea estable, emitimos todos los campos.
+    let grub_json = json!({
+        "timeout": plan.grub_config.timeout,
+        "saved_default": plan.grub_config.saved_default,
+        "gfxmode_auto": plan.grub_config.gfxmode_auto,
+    });
+
+    let doc = json!({
+        "desktop_environment": plan.desktop_env_id,
+        "display_manager": plan.display_manager,
+        "to_install": {
+            "official": off_to_install,
+            "aur": aur_to_install,
+        },
+        "already_installed": {
+            "official": off_have,
+            "aur": aur_have,
+        },
+        "updates_available": sys.updates_available.len(),
+        "services": svcs,
+        "estimate": estimate_json,
+        "system": system_json,
+        "post_install": plan.post_install,
+        "grub_config": grub_json,
+    });
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&doc)
+            .unwrap_or_else(|e| { format!("{{\"error\":\"failed to serialize plan: {e}\"}}") })
+    );
+}
+
 /// Imprime una linea con la estimacion de espacio en texto plano.
 /// Si no hay nada que instalar o todo es desconocido, no imprime nada.
 fn print_estimate(est: &PlanEstimate) {
@@ -258,12 +369,22 @@ fn make_options(cli: &Cli, sys: &SystemStatus) -> InstallOptions {
 /// revisado y confirmado en la pantalla de revision de la TUI.
 fn run_plan(plan: InstallPlan, cli: &Cli, already_confirmed: bool) -> Result<()> {
     if plan.is_empty() {
-        println!("No hay nada que instalar. Saliendo.");
+        if cli.format == OutputFormat::Json {
+            // En modo JSON, no decimos "no hay nada" en stdout
+            // porque eso no es JSON valido. El caller decidira
+            // que hacer (suele ser exit 0 o un mensaje vacio).
+        } else {
+            println!("No hay nada que instalar. Saliendo.");
+        }
         return Ok(());
     }
 
     let sys = SystemStatus::detect();
-    show_plan(&plan, &sys);
+    if cli.format == OutputFormat::Json {
+        show_plan_json(&plan, &sys);
+    } else {
+        show_plan(&plan, &sys);
+    }
 
     // Pre-flight en CLI: imprime el informe y aborta si hay fallos
     // criticos, salvo que el usuario use --yes.
@@ -314,18 +435,26 @@ fn run_plan(plan: InstallPlan, cli: &Cli, already_confirmed: bool) -> Result<()>
 /// y para autores de perfiles. Imprime un informe y devuelve el
 /// `ExitCode` apropiado: 0 si todo OK, 1 si hay paquetes faltantes o
 /// campos invalidos.
-fn cmd_validate_profile(path: &std::path::Path) -> ExitCode {
+fn cmd_validate_profile(path: &std::path::Path, format: OutputFormat) -> ExitCode {
     let profile = match profile::load_from_path(path) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("No se pudo cargar el perfil: {e}");
+            if format == OutputFormat::Json {
+                println!("{}", serde_json::json!({"error": format!("{e}")}));
+            } else {
+                eprintln!("No se pudo cargar el perfil: {e}");
+            }
             return ExitCode::FAILURE;
         }
     };
 
-    println!("── Validacion del perfil '{}' ──", profile.name);
     let report = validate_profile::validate(&profile, true);
-    print_validate_report(&report);
+    if format == OutputFormat::Json {
+        print_validate_report_json(&report);
+    } else {
+        println!("── Validacion del perfil '{}' ──", profile.name);
+        print_validate_report(&report);
+    }
 
     if !report.api_errors.is_empty() {
         for err in &report.api_errors {
@@ -377,6 +506,42 @@ fn print_validate_report(r: &ValidateReport) {
     } else {
         println!("  Resultado: hay problemas (ver arriba).");
     }
+}
+
+/// Imprime el informe de validacion en formato JSON. Pensado para que
+/// CI/scripts puedan parsearlo con `jq` o similar.
+fn print_validate_report_json(r: &ValidateReport) {
+    use serde_json::json;
+    let fields: Vec<_> = r
+        .fields
+        .iter()
+        .map(|f| {
+            json!({
+                "name": f.name,
+                "value": f.value,
+                "ok": f.ok,
+            })
+        })
+        .collect();
+    let doc = json!({
+        "profile_name": r.profile_name,
+        "ok": r.is_ok(),
+        "fields": fields,
+        "official": {
+            "found": r.found_official,
+            "missing": r.missing_official,
+        },
+        "aur": {
+            "found": r.found_aur,
+            "missing": r.missing_aur,
+        },
+        "api_errors": r.api_errors,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&doc)
+            .unwrap_or_else(|e| { format!("{{\"error\":\"failed to serialize report: {e}\"}}") })
+    );
 }
 
 fn main() -> ExitCode {
@@ -433,7 +598,7 @@ fn main() -> ExitCode {
 
     // Validar un perfil TOML sin instalar nada. Pensado para CI.
     if let Some(path) = &cli.validate_profile {
-        return cmd_validate_profile(std::path::Path::new(path));
+        return cmd_validate_profile(std::path::Path::new(path), cli.format);
     }
 
     // Modo perfil: instalar directamente desde un perfil guardado.

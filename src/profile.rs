@@ -51,9 +51,8 @@ pub fn load(name: &str) -> Result<Profile> {
 pub fn load_from_path(path: &std::path::Path) -> Result<Profile> {
     let body = fs::read_to_string(path)
         .with_context(|| format!("No se pudo leer el perfil {}", path.display()))?;
-    let profile: Profile =
-        toml::from_str(&body).with_context(|| format!("Perfil invalido: {}", path.display()))?;
-    Ok(profile)
+    toml::from_str::<Profile>(&body)
+        .map_err(|e| anyhow::anyhow!("Perfil invalido en {}: {}", path.display(), e.message()))
 }
 
 /// Lista los nombres de los perfiles guardados.
