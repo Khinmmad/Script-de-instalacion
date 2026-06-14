@@ -206,6 +206,10 @@ struct App {
     // aparte porque la lista de paises es larga y no encaja en el
     // formulario de arriba.
     sys_mirror_region: String,
+
+    // Confirmacion pendiente al pulsar "Salir" con trabajo en el
+    // plan: la primera pulsacion muestra el aviso, la segunda confirma.
+    pending_quit: bool,
 }
 
 impl App {
@@ -299,6 +303,7 @@ impl App {
             sys_reboot,
             sys_cleanup_orphans,
             sys_mirror_region: String::new(),
+            pending_quit: false,
             update_notice: crate::update::check_for_update(),
             update_dismissed: false,
             preflight: None,
@@ -374,6 +379,26 @@ impl App {
 
     fn count_drivers(&self) -> usize {
         self.drivers.iter().filter(|&&d| d).count()
+    }
+
+    /// Devuelve `true` si el usuario hizo algun trabajo que perderia al
+    /// salir (paquetes, ajustes del sistema). Usado para confirmar el
+    /// 'q' en el menu principal. `false` si el plan esta en blanco y
+    /// ningun ajuste del sistema fue tocado.
+    #[allow(dead_code)]
+    fn has_work(&self) -> bool {
+        let plan = self.build_plan();
+        if !plan.is_empty() {
+            return true;
+        }
+        plan.mirror_region.is_some()
+            || plan.enable_multilib
+            || plan.locale.is_some()
+            || plan.timezone.is_some()
+            || plan.keymap.is_some()
+            || plan.hostname.is_some()
+            || plan.reboot_after
+            || plan.cleanup_orphans
     }
 
     /// Resumen corto de los ajustes del sistema para el menu principal.
@@ -555,10 +580,7 @@ pub fn run() -> Result<Outcome> {
                 KeyCode::Esc | KeyCode::Char('q') => break Outcome::Cancelled,
                 _ => {}
             },
-            Mode::PickLocale
-            | Mode::PickTimezone
-            | Mode::PickKeymap
-            | Mode::PickMirror => {
+            Mode::PickLocale | Mode::PickTimezone | Mode::PickKeymap | Mode::PickMirror => {
                 handle_picker(&mut app, key.code);
             }
             Mode::Main => {
@@ -690,9 +712,26 @@ fn handle_text_submit(app: &mut App) {
 }
 
 fn handle_main(app: &mut App, code: KeyCode) -> Option<Outcome> {
+    // Cualquier tecla cancela un "pending_quit" pendiente.
+    if app.pending_quit && !matches!(code, KeyCode::Char('q') | KeyCode::Esc) {
+        app.pending_quit = false;
+        app.status = "Salida cancelada.".into();
+        return None;
+    }
     move_cursor(&mut app.main_cursor, MENU.len(), code);
     match code {
-        KeyCode::Char('q') | KeyCode::Esc => return Some(Outcome::Cancelled),
+        KeyCode::Char('q') | KeyCode::Esc => {
+            if app.has_work() && !app.pending_quit {
+                // Primera pulsacion: avisar. La segunda confirma.
+                let count = app.build_plan().official.len() + app.build_plan().aur.len();
+                app.pending_quit = true;
+                app.status = format!(
+                    "Tienes {count} paquete(s) en el plan. Pulsa 'q' otra vez para salir sin guardar."
+                );
+                return None;
+            }
+            return Some(Outcome::Cancelled);
+        }
         KeyCode::Enter => match app.main_cursor {
             MENU_DESKTOP => {
                 app.mode = Mode::Desktop;
@@ -1064,10 +1103,9 @@ fn draw(f: &mut Frame, app: &mut App) {
         Mode::LoadProfile => draw_load_profile(f, chunks[1], app),
         Mode::SaveProfile => draw_save_profile(f, chunks[1], app),
         Mode::Review => draw_review(f, chunks[1], app),
-        Mode::PickLocale
-        | Mode::PickTimezone
-        | Mode::PickKeymap
-        | Mode::PickMirror => draw_picker(f, chunks[1], app),
+        Mode::PickLocale | Mode::PickTimezone | Mode::PickKeymap | Mode::PickMirror => {
+            draw_picker(f, chunks[1], app)
+        }
     }
     draw_status(f, chunks[2], app);
 }
@@ -2112,6 +2150,85 @@ mod tests {
         // Lo no incluido en el perfil queda desmarcado.
         let vlc = app.official.iter().find(|p| p.name == "vlc").unwrap();
         assert!(!vlc.selected);
+    }
+
+    #[test]
+    fn has_work_detects_plan_state() {
+        // App recien creada: solo DE por defecto (incluye base). Eso
+        // cuenta como trabajo (no es un plan vacio).
+        let app = App::new();
+        assert!(app.has_work());
+    }
+
+    #[test]
+    fn has_work_handles_empty_state() {
+        // Forzamos un plan vacio y ningun ajuste: has_work -> false.
+        // Ponemos el DE en "ninguno", desmarcamos paquetes y drivers,
+        // y limpiamos cualquier ajuste de sistema detectado.
+        let mut app = App::new();
+        let idx = DESKTOP_ENVIRONMENTS
+            .iter()
+            .position(|d| d.id == "ninguno")
+            .unwrap();
+        app.de_index = idx;
+        for p in &mut app.official {
+            p.selected = false;
+        }
+        for p in &mut app.aur {
+            p.selected = false;
+        }
+        for d in &mut app.drivers {
+            *d = false;
+        }
+        app.sys_locale.clear();
+        app.sys_timezone.clear();
+        app.sys_keymap.clear();
+        app.sys_hostname.clear();
+        app.sys_mirror_region.clear();
+        app.sys_multilib = false;
+        app.sys_reboot = false;
+        app.sys_cleanup_orphans = false;
+        assert!(!app.has_work());
+    }
+
+    #[test]
+    fn has_work_counts_system_settings() {
+        // Plan vacio pero con un ajuste de sistema: tambien es trabajo.
+        let mut app = App::new();
+        let idx = DESKTOP_ENVIRONMENTS
+            .iter()
+            .position(|d| d.id == "ninguno")
+            .unwrap();
+        app.de_index = idx;
+        for p in &mut app.official {
+            p.selected = false;
+        }
+        for p in &mut app.aur {
+            p.selected = false;
+        }
+        for d in &mut app.drivers {
+            *d = false;
+        }
+        app.sys_locale.clear();
+        app.sys_timezone.clear();
+        app.sys_keymap.clear();
+        app.sys_hostname.clear();
+        app.sys_mirror_region.clear();
+        app.sys_multilib = false;
+        app.sys_reboot = false;
+        app.sys_cleanup_orphans = false;
+        assert!(!app.has_work());
+        // Anadir un locale dispara has_work.
+        app.sys_locale = "es_MX.UTF-8".into();
+        assert!(app.has_work());
+        // O multilib.
+        app.sys_locale.clear();
+        app.sys_multilib = true;
+        assert!(app.has_work());
+        // O mirror_region.
+        app.sys_multilib = false;
+        app.sys_mirror_region = "Mexico".into();
+        assert!(app.has_work());
     }
 
     #[test]
