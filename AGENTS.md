@@ -27,8 +27,8 @@ bonito".
 
 - **Version**: `0.8.0` (en `Cargo.toml`)
 - **Rama**: `main`, limpia, sin cambios sin commitear
-- **Ultimo commit**: `2c77cc4` (TUI: confirmacion al pulsar 'q' en el menu con plan no vacio)
-- **Tests**: 60/60 pasan
+- **Ultimo commit**: `5e9877e` (Flags de GRUB funcionales en el form del sistema)
+- **Tests**: 66/66 pasan
 - **Linters**: `cargo clippy --all-targets -- -D warnings` limpio,
   `cargo fmt --check` limpio
 - **Binario**: `cargo build --release` produce
@@ -167,6 +167,7 @@ fuera revisable:
     "Espacio: descargar X, instalar Y, libre Z (ok/no-cabe)"
   - Pickers buscables para locale/zona/teclado/mirror (Enter abre, `(Personalizado...)` para valor fuera de la lista)
   - Menu de mirrors: ~60 paises, `reflector --country` se aplica antes de `-Syu`
+  - Form del sistema: GRUB_TIMEOUT, GRUB_DEFAULT=saved, GRUB_GFXMODE=auto
   - `s` en revision = salir sin hacer nada
   - `p` en revision = re-ejecutar pre-flight
   - `u` global = descartar aviso de actualizacion
@@ -179,19 +180,19 @@ fuera revisable:
   - Panic hook con mensaje claro
   - Backup de /etc antes de cada modificacion (`*.arch-postinstall.bak`)
   - Aplicar mirror selection via reflector (instala reflector si falta)
-- **CLI** (`show_plan`): muestra la estimacion de espacio y los mirrors en texto plano
+  - Ajustes funcionales de GRUB (GRUB_TIMEOUT / saved / gfxmode)
+  - Snapshot BTRFS+snapper pre-instalacion (rollback)
+  - Post-install hooks del perfil (`sh -c <cmd>`)
+- **CLI**:
+  - `show_plan` muestra estimacion, mirrors, post-install, grub en texto plano
+  - `--validate-profile <PATH>` para CI (exit 0/1 segun validez)
 
 ## Trabajo pendiente / ideas
 
-- **BTRFS/snapper snapshot** antes de instalar (rollback)
 - **Per-package notes** en perfiles (overkill?)
 - **Mouse support** en la TUI (overkill?)
-- **Post-install hooks**: un campo `post_install` en el perfil para
-  que cada quien meta sus comandos sin parchar el binario
-- **Flags de GRUB funcionales** (no temas): `GRUB_TIMEOUT`,
-  `GRUB_DEFAULT=saved`, `GRUB_GFXMODE=auto`
-- **`--validate-profile`**: parsea un TOML y dice que paquetes
-  no existen en repos/AUR, sin instalar nada. Util para CI.
+- **`--quiet` / JSON output** para CI
+- **Wallpaper / tema por DE** (overkill)
 
 ## Notas personales del agente
 

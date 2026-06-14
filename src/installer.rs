@@ -826,7 +826,15 @@ fn configure_boot(
 pub fn execute(plan: &InstallPlan, opts: &InstallOptions, log: &mut Logger) -> Vec<StepResult> {
     let mut results = Vec::new();
 
-    // 0. Pre-flight checks: detectan problemas comunes de un sistema
+    // 0. Snapshot BTRFS/snapper pre-instalacion (rollback de seguridad).
+    //    Solo se ejecuta si el sistema es BTRFS, tiene snapper
+    //    instalado y al menos un config. Si falta algo, seguimos sin
+    //    snapshot (la mayoria de usuarios no usa BTRFS+snapper).
+    if let Some(steps) = create_snapper_pre_snapshot(log, opts) {
+        results.extend(steps);
+    }
+
+    // 1. Pre-flight checks: detectan problemas comunes de un sistema
     //    recien instalado (sin sudo configurado, sin internet, DB
     //    bloqueada, sin espacio, sin git/base-devel para AUR). Se
     //    registran en el log; los `Fail` no abortan la instalacion
@@ -1104,6 +1112,92 @@ fn unit_name(name: &str) -> String {
 
 /// Imprime un resumen final legible. Si hubo fallos los lista uno por uno
 /// y, al final, recuerda donde esta el log completo.
+/// Detecta si el sistema es BTRFS con snapper configurado y, si lo
+/// es, crea un snapshot pre-instalacion por cada config. Devuelve
+/// `Some(steps)` si habia algo que hacer (con los resultados de cada
+/// snapshot), o `None` si no aplica (sistema no BTRFS o sin snapper).
+///
+/// Es seguro en sistemas no BTRFS: si algo falla en la deteccion,
+/// simplemente devuelve `None` y la instalacion sigue.
+fn create_snapper_pre_snapshot(
+    log: &mut Logger,
+    opts: &InstallOptions,
+) -> Option<Vec<StepResult>> {
+    // 1. Comprobar que el sistema es BTRFS.
+    let fstype = Command::new("findmnt")
+        .args(["-n", "-o", "FSTYPE", "/"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let fstype = match fstype {
+        Some(ft) if ft == "btrfs" => ft,
+        Some(ft) => {
+            log.log(&format!(
+                "==> Snapshot BTRFS: omitido (sistema en {ft}, no BTRFS)"
+            ));
+            return None;
+        }
+        None => {
+            log.log("==> Snapshot BTRFS: omitido (no se pudo detectar FS)");
+            return None;
+        }
+    };
+    let _ = fstype; // fstype ya validada; solo usamos para el log
+
+    // 2. Comprobar que snapper esta instalado.
+    if !Command::new("snapper")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        log.log("==> Snapshot BTRFS: omitido (snapper no esta instalado)");
+        return None;
+    }
+
+    // 3. Listar los configs de snapper. Si no hay, no hay nada que
+    //    hacer (el usuario tendria que ejecutar 'snapper create-config'
+    //    primero).
+    let configs: Vec<String> = match Command::new("sh")
+        .args(["-c", "ls /etc/snapper/configs/ 2>/dev/null"])
+        .output()
+    {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect(),
+        _ => Vec::new(),
+    };
+    if configs.is_empty() {
+        log.log("==> Snapshot BTRFS: omitido (no hay configs de snapper)");
+        return None;
+    }
+
+    log.log(&format!(
+        "==> Creando snapshot(s) pre-instalacion con snapper ({} config(s))",
+        configs.len()
+    ));
+    let mut steps = Vec::new();
+    for cfg in &configs {
+        let desc = format!("arch-postinstall pre-install ({})", cfg);
+        let ok = run(
+            log,
+            opts,
+            "sudo",
+            &["snapper", "-c", cfg, "create", "-t", "pre", "-d", &desc],
+        );
+        steps.push(StepResult {
+            label: format!("snapper snapshot ({cfg})"),
+            ok,
+        });
+    }
+    log.log("    Para hacer rollback: 'sudo snapper -c <config> undochange'");
+    Some(steps)
+}
+
 pub fn print_summary(results: &[StepResult], log: &mut Logger) {
     let ok = results.iter().filter(|r| r.ok).count();
     let failed: Vec<&StepResult> = results.iter().filter(|r| !r.ok).collect();
