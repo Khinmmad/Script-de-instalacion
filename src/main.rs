@@ -5,6 +5,7 @@ mod catalog;
 mod detect;
 mod installer;
 mod model;
+mod options;
 mod preflight;
 mod profile;
 mod repo_api;

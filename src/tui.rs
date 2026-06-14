@@ -31,6 +31,56 @@ struct PkgItem {
     installed: bool,
 }
 
+/// Campo del formulario al que apunta un picker.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PickerTarget {
+    Locale,
+    Timezone,
+    Keymap,
+}
+
+/// Estado del picker buscable. La lista completa se carga al abrir; el
+/// filtro se aplica en cada pulsacion. La primera opcion siempre es
+/// "(Personalizado...)" para que el usuario pueda escribir un valor
+/// fuera de la lista.
+struct PickerState {
+    title: String,
+    options: Vec<String>,
+    filter: String,
+    cursor: usize,
+    current: String,
+    target: PickerTarget,
+}
+
+impl PickerState {
+    fn new(title: &str, options: Vec<String>, current: String, target: PickerTarget) -> Self {
+        let mut options = options;
+        // La opcion de tipear valor propio siempre va al principio.
+        options.insert(0, "(Personalizado...)".to_string());
+        Self {
+            title: title.to_string(),
+            options,
+            filter: String::new(),
+            cursor: 0,
+            current,
+            target,
+        }
+    }
+
+    /// Devuelve las opciones que coinciden con el filtro (case-insensitive).
+    fn filtered(&self) -> Vec<&str> {
+        if self.filter.is_empty() {
+            return self.options.iter().map(String::as_str).collect();
+        }
+        let f = self.filter.to_lowercase();
+        self.options
+            .iter()
+            .filter(|o| o.to_lowercase().contains(&f))
+            .map(String::as_str)
+            .collect()
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Welcome,
@@ -38,6 +88,9 @@ enum Mode {
     Desktop,
     Drivers,
     Official,
+    PickLocale,
+    PickTimezone,
+    PickKeymap,
     Aur,
     System,
     Search,
@@ -115,6 +168,11 @@ struct App {
     // revision). Mientras sea `None` significa que no se ha calculado
     // todavia para el plan actual.
     preflight: Option<crate::preflight::PreflightReport>,
+
+    // Estado del picker activo. Solo se usa en los modos Pick*.
+    // Mantenerlo siempre presente (no en Option) evita tener que
+    // inicializarlo a mano cada vez.
+    picker: PickerState,
 
     // Busqueda
     search_source: Source,
@@ -230,6 +288,9 @@ impl App {
             update_notice: crate::update::check_for_update(),
             update_dismissed: false,
             preflight: None,
+            // Picker inerte hasta que el usuario lo abra desde el formulario
+            // de sistema; los campos no importan mientras no este activo.
+            picker: PickerState::new("", Vec::new(), String::new(), PickerTarget::Locale),
         }
     }
 
@@ -475,6 +536,9 @@ pub fn run() -> Result<Outcome> {
                 KeyCode::Esc | KeyCode::Char('q') => break Outcome::Cancelled,
                 _ => {}
             },
+            Mode::PickLocale | Mode::PickTimezone | Mode::PickKeymap => {
+                handle_picker(&mut app, key.code);
+            }
             Mode::Main => {
                 if let Some(o) = handle_main(&mut app, key.code) {
                     break o;
@@ -679,6 +743,117 @@ fn handle_desktop(app: &mut App, code: KeyCode) {
     }
 }
 
+// ----------------------------- Picker -----------------------------
+
+/// Abre el picker para un campo del formulario de sistema, cargando la
+/// lista correspondiente y la opcion actualmente seleccionada.
+fn open_picker(app: &mut App, target: PickerTarget) {
+    let (title, options, current) = match target {
+        PickerTarget::Locale => (
+            "Selecciona locale",
+            crate::options::locales(),
+            app.sys_locale.clone(),
+        ),
+        PickerTarget::Timezone => (
+            "Selecciona zona horaria",
+            crate::options::timezones(),
+            app.sys_timezone.clone(),
+        ),
+        PickerTarget::Keymap => (
+            "Selecciona teclado de consola",
+            crate::options::keymaps(),
+            app.sys_keymap.clone(),
+        ),
+    };
+    let current_trim = current.trim().to_string();
+    app.picker = PickerState::new(title, options, current_trim, target);
+    app.mode = match target {
+        PickerTarget::Locale => Mode::PickLocale,
+        PickerTarget::Timezone => Mode::PickTimezone,
+        PickerTarget::Keymap => Mode::PickKeymap,
+    };
+    app.status = "Escribe para filtrar · Enter elige · Esc cancela".into();
+}
+
+/// Confirma la seleccion actual del picker. Si eligio "(Personalizado...)"
+/// va al modo texto para ese campo; si no, asigna el valor y vuelve al
+/// formulario de sistema.
+fn confirm_picker(app: &mut App) {
+    let filtered = app.picker.filtered();
+    let Some(picked) = filtered.get(app.picker.cursor) else {
+        // Lista vacia tras filtrar: nada que hacer.
+        app.status = "No hay resultados. Esc para cancelar.".into();
+        return;
+    };
+    if *picked == "(Personalizado...)" {
+        // Volvemos al formulario y abrimos el modo texto sobre el campo
+        // que el picker estaba editando.
+        let field_idx = match app.picker.target {
+            PickerTarget::Locale => 0,
+            PickerTarget::Timezone => 1,
+            PickerTarget::Keymap => 2,
+        };
+        app.sys_cursor = field_idx;
+        app.typing = true;
+        app.mode = Mode::System;
+        app.status = "Escribe el valor y Enter para confirmar.".into();
+        return;
+    }
+    match app.picker.target {
+        PickerTarget::Locale => app.sys_locale = picked.to_string(),
+        PickerTarget::Timezone => app.sys_timezone = picked.to_string(),
+        PickerTarget::Keymap => app.sys_keymap = picked.to_string(),
+    }
+    app.mode = Mode::System;
+    app.status = format!("Seleccionado: {picked}");
+}
+
+fn cancel_picker(app: &mut App) {
+    app.mode = Mode::System;
+    app.status = "Picker cancelado.".into();
+}
+
+fn handle_picker(app: &mut App, code: KeyCode) {
+    let filtered_len = app.picker.filtered().len();
+    match code {
+        KeyCode::Esc => cancel_picker(app),
+        KeyCode::Enter => confirm_picker(app),
+        KeyCode::Backspace => {
+            app.picker.filter.pop();
+            app.picker.cursor = 0;
+        }
+        KeyCode::Char(c) => {
+            app.picker.filter.push(c);
+            app.picker.cursor = 0;
+        }
+        KeyCode::Up => {
+            if filtered_len > 0 {
+                app.picker.cursor = app.picker.cursor.checked_sub(1).unwrap_or(filtered_len - 1);
+            }
+        }
+        KeyCode::Down => {
+            if filtered_len > 0 {
+                app.picker.cursor = (app.picker.cursor + 1) % filtered_len;
+            }
+        }
+        KeyCode::PageUp => {
+            if filtered_len > 0 {
+                app.picker.cursor = app.picker.cursor.saturating_sub(10);
+            }
+        }
+        KeyCode::PageDown => {
+            if filtered_len > 0 {
+                app.picker.cursor = (app.picker.cursor + 10).min(filtered_len - 1);
+            }
+        }
+        KeyCode::Home => app.picker.cursor = 0,
+        KeyCode::End if filtered_len > 0 => {
+            app.picker.cursor = filtered_len - 1;
+        }
+        _ => {}
+    }
+}
+
 fn handle_system(app: &mut App, code: KeyCode) {
     move_cursor(&mut app.sys_cursor, SYS_FIELDS, code);
     match code {
@@ -689,10 +864,17 @@ fn handle_system(app: &mut App, code: KeyCode) {
             SYS_CLEANUP => app.sys_cleanup_orphans = !app.sys_cleanup_orphans,
             _ => {}
         },
-        KeyCode::Enter | KeyCode::Char('i') if app.sys_cursor <= 3 => {
-            app.typing = true;
-            app.status = "Editando campo. Enter confirma, Esc cancela.".into();
-        }
+        KeyCode::Enter | KeyCode::Char('i') => match app.sys_cursor {
+            0 => open_picker(app, PickerTarget::Locale),
+            1 => open_picker(app, PickerTarget::Timezone),
+            2 => open_picker(app, PickerTarget::Keymap),
+            3 => {
+                // Hostname no tiene lista: va directo al modo texto.
+                app.typing = true;
+                app.status = "Editando hostname. Enter confirma, Esc cancela.".into();
+            }
+            _ => {}
+        },
         _ => {}
     }
 }
@@ -815,6 +997,7 @@ fn draw(f: &mut Frame, app: &mut App) {
         Mode::LoadProfile => draw_load_profile(f, chunks[1], app),
         Mode::SaveProfile => draw_save_profile(f, chunks[1], app),
         Mode::Review => draw_review(f, chunks[1], app),
+        Mode::PickLocale | Mode::PickTimezone | Mode::PickKeymap => draw_picker(f, chunks[1], app),
     }
     draw_status(f, chunks[2], app);
 }
@@ -1313,6 +1496,68 @@ fn draw_save_profile(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(p, area);
 }
 
+fn draw_picker(f: &mut Frame, area: Rect, app: &App) {
+    let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).split(area);
+    let filtered = app.picker.filtered();
+    let filter_display = if app.picker.filter.is_empty() {
+        "<escribe para filtrar>".to_string()
+    } else {
+        app.picker.filter.clone()
+    };
+    let input = Paragraph::new(Line::from(vec![
+        Span::raw("Filtro: "),
+        Span::styled(
+            format!("{filter_display}_"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" {} ", app.picker.title))
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    f.render_widget(input, chunks[0]);
+
+    let items: Vec<ListItem> = filtered
+        .iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            let marker = if i == app.picker.cursor { "➤ " } else { "  " };
+            let mut spans = vec![Span::styled(marker, Style::default().fg(Color::Cyan))];
+            if *opt == "(Personalizado...)" {
+                spans.push(Span::styled(
+                    opt.to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            } else if !app.picker.current.is_empty() && *opt == app.picker.current.as_str() {
+                spans.push(Span::styled(
+                    opt.to_string(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::styled(
+                    "  (actual)",
+                    Style::default().fg(Color::DarkGray),
+                ));
+            } else {
+                spans.push(Span::styled(opt.to_string(), Style::default()));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let title = if filtered.is_empty() {
+        " (sin resultados - Esc para cancelar) "
+    } else {
+        " (Enter para elegir, Esc para cancelar) "
+    };
+    render_list(f, chunks[1], items, app.picker.cursor, title);
+}
+
 fn draw_review(f: &mut Frame, area: Rect, app: &mut App) {
     let plan = app.build_plan();
 
@@ -1612,10 +1857,13 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         Mode::Welcome => "Enter: comenzar · q: salir",
         Mode::Main => "↑/↓: mover · Enter: abrir · q: salir",
         Mode::Search => "Tab: fuente · i: editar · Space: anadir · Enter: volver · q: menu",
-        Mode::System => "↑/↓: campo · Enter/i: editar · Space: marcar · q: menu",
+        Mode::System => "↑/↓: campo · Enter: picker · Space: marcar · q: menu",
         Mode::LoadProfile => "↑/↓: mover · Enter: cargar · q: menu",
         Mode::SaveProfile => "Escribe el nombre · Enter: guardar · Esc: cancelar",
         Mode::Review => "Enter: instalar · p: re-ejecutar pre-flight · s: salir · Esc: volver",
+        Mode::PickLocale | Mode::PickTimezone | Mode::PickKeymap => {
+            "Escribe: filtrar · Enter: elegir · Esc: cancelar"
+        }
         _ => "↑/↓: mover · Space: marcar · q: volver al menu",
     };
     let mut text: Vec<Line> = Vec::new();
@@ -1746,5 +1994,46 @@ mod tests {
         assert_eq!(c, 10);
         move_cursor(&mut c, 0, KeyCode::Down); // lista vacia: no panic
         assert_eq!(c, 10);
+    }
+
+    #[test]
+    fn picker_state_prepends_custom_option() {
+        let p = PickerState::new(
+            "Test",
+            vec!["a".into(), "b".into(), "c".into()],
+            "b".into(),
+            PickerTarget::Locale,
+        );
+        assert_eq!(p.options[0], "(Personalizado...)");
+        assert_eq!(p.filtered().len(), 4); // custom + 3
+                                           // La opcion actual esta guardada.
+        assert_eq!(p.current, "b");
+    }
+
+    #[test]
+    fn picker_filter_is_case_insensitive_and_substring() {
+        let mut p = PickerState::new(
+            "Test",
+            vec![
+                "es_MX.UTF-8".into(),
+                "es_ES.UTF-8".into(),
+                "en_US.UTF-8".into(),
+            ],
+            String::new(),
+            PickerTarget::Locale,
+        );
+        // Filtro "ES" debe matchear los dos es_* (case-insensitive).
+        p.filter = "ES".into();
+        let hits: Vec<&str> = p.filtered();
+        assert_eq!(hits.len(), 2);
+        assert!(hits.contains(&"es_MX.UTF-8"));
+        assert!(hits.contains(&"es_ES.UTF-8"));
+        // Filtro sin resultados.
+        p.filter = "xyz".into();
+        assert!(p.filtered().is_empty());
+        // Filtro vacio -> todas las opciones (incluyendo el prefijo
+        // "(Personalizado...)").
+        p.filter = String::new();
+        assert_eq!(p.filtered().len(), 4);
     }
 }
