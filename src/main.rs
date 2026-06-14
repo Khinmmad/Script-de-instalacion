@@ -8,6 +8,7 @@ mod model;
 mod profile;
 mod repo_api;
 mod tui;
+mod update;
 mod validate;
 
 use std::process::ExitCode;
@@ -233,6 +234,18 @@ fn main() -> ExitCode {
     }));
 
     let cli = parse_args();
+
+    // Aviso de actualizacion: silencioso si falla. Solo lo mostramos en
+    // los modos donde el usuario va a hacer algo (no en -h / -V).
+    if !cli.help && !cli.version {
+        if let Some(new_ver) = update::check_for_update() {
+            eprintln!(
+                "Nueva version v{new_ver} disponible (actual: v{VERSION}). \
+                 Descargala de: https://github.com/Khinmmad/Script-de-instalacion/releases/latest"
+            );
+            eprintln!();
+        }
+    }
 
     if cli.help {
         print_help();

@@ -105,6 +105,12 @@ struct App {
     // detecta una sola vez al iniciar la TUI.
     sys_state: SystemStatus,
 
+    // Si hay una version nueva disponible, contiene el tag (sin 'v').
+    // Se muestra en la barra de estado y se queda hasta que el usuario
+    // lo descarta pulsando 'u' (o hasta que reinicie la TUI).
+    update_notice: Option<String>,
+    update_dismissed: bool,
+
     // Busqueda
     search_source: Source,
     search_input: String,
@@ -216,6 +222,8 @@ impl App {
             sys_multilib,
             sys_reboot,
             sys_cleanup_orphans,
+            update_notice: crate::update::check_for_update(),
+            update_dismissed: false,
         }
     }
 
@@ -410,6 +418,12 @@ pub fn run() -> Result<Outcome> {
             continue;
         };
         if key.kind != KeyEventKind::Press {
+            continue;
+        }
+
+        // 'u' descarta el aviso de actualizacion en cualquier modo.
+        if key.code == KeyCode::Char('u') && app.update_notice.is_some() && !app.update_dismissed {
+            app.update_dismissed = true;
             continue;
         }
 
@@ -1531,13 +1545,34 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         Mode::Review => "Enter: instalar · s: salir sin hacer nada · Esc: volver al menu",
         _ => "↑/↓: mover · Space: marcar · q: volver al menu",
     };
-    let text = vec![
-        Line::from(Span::styled(
-            app.status.clone(),
-            Style::default().fg(Color::Yellow),
-        )),
-        Line::from(Span::styled(help, Style::default().fg(Color::DarkGray))),
-    ];
+    let mut text: Vec<Line> = Vec::new();
+    // Aviso de actualizacion (si existe y no fue descartado).
+    if let Some(ver) = app.update_notice.as_ref().filter(|_| !app.update_dismissed) {
+        text.push(Line::from(vec![
+            Span::styled(
+                "  ⬆ ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("Nueva version v{ver} disponible  "),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(
+                "(pulsa 'u' para descartar)",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+    text.push(Line::from(Span::styled(
+        app.status.clone(),
+        Style::default().fg(Color::Yellow),
+    )));
+    text.push(Line::from(Span::styled(
+        help,
+        Style::default().fg(Color::DarkGray),
+    )));
     let p = Paragraph::new(text)
         .alignment(Alignment::Left)
         .block(Block::default().borders(Borders::ALL));
