@@ -27,8 +27,8 @@ bonito".
 
 - **Version**: `0.8.0` (en `Cargo.toml`)
 - **Rama**: `main`, limpia, sin cambios sin commitear
-- **Ultimo commit**: `f603d43` (Bump version 0.7.0 → 0.8.0)
-- **Tests**: 50/50 pasan
+- **Ultimo commit**: `2c77cc4` (TUI: confirmacion al pulsar 'q' en el menu con plan no vacio)
+- **Tests**: 60/60 pasan
 - **Linters**: `cargo clippy --all-targets -- -D warnings` limpio,
   `cargo fmt --check` limpio
 - **Binario**: `cargo build --release` produce
@@ -166,28 +166,33 @@ fuera revisable:
   - Pantalla de revision: pre-flight, "Por instalar / Ya instalado",
     "Servicios a habilitar / ya activos", updates disponibles,
     "Espacio: descargar X, instalar Y, libre Z (ok/no-cabe)"
-  - Pickers buscables para locale/zona/teclado (Enter abre, `(Personalizado...)` para valor fuera de la lista)
+  - Pickers buscables para locale/zona/teclado/mirror (Enter abre, `(Personalizado...)` para valor fuera de la lista)
+  - Menu de mirrors: ~60 paises, `reflector --country` se aplica antes de `-Syu`
   - `s` en revision = salir sin hacer nada
   - `p` en revision = re-ejecutar pre-flight
   - `u` global = descartar aviso de actualizacion
+  - `q` en menu principal con plan no vacio = confirmacion (doble pulsacion)
   - Resumen en menu: "X por instalar, Y ya en sistema"
 - **Instalador**:
   - Orden AUR-primero
   - Skip de paquetes ya instalados (con log explicito)
   - Captura stderr y sugerencias contextuales por programa
   - Panic hook con mensaje claro
-- **CLI** (`show_plan`): muestra la estimacion de espacio en texto plano
+  - Backup de /etc antes de cada modificacion (`*.arch-postinstall.bak`)
+  - Aplicar mirror selection via reflector (instala reflector si falta)
+- **CLI** (`show_plan`): muestra la estimacion de espacio y los mirrors en texto plano
 
 ## Trabajo pendiente / ideas
 
-- **Mirror selection** (geografico) - affecta velocidad de descarga
 - **BTRFS/snapper snapshot** antes de instalar (rollback)
 - **Per-package notes** en perfiles (overkill?)
 - **Mouse support** en la TUI (overkill?)
-- **Preflight mas inteligente**: el check de disco deberia contrastar
-  libre vs estimado (warn si no alcanza), no solo umbrales absolutos
-- **Bug**: `app.estimate` y `app.preflight` quedan stale si el usuario
-  vuelve al menu, cambia el plan, y re-entra a revision
+- **Post-install hooks**: un campo `post_install` en el perfil para
+  que cada quien meta sus comandos sin parchar el binario
+- **Flags de GRUB funcionales** (no temas): `GRUB_TIMEOUT`,
+  `GRUB_DEFAULT=saved`, `GRUB_GFXMODE=auto`
+- **`--validate-profile`**: parsea un TOML y dice que paquetes
+  no existen en repos/AUR, sin instalar nada. Util para CI.
 
 ## Notas personales del agente
 
