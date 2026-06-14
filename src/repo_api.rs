@@ -84,6 +84,29 @@ fn search_aur(term: &str) -> Result<Vec<Found>> {
     Ok(out)
 }
 
+/// Comprueba que cada nombre de `names` exista en el AUR. Devuelve un
+/// `HashSet` con los que si existen; los que faltan son los que no
+/// aparecen en el set. Usado por `--validate-profile` para CI.
+///
+/// Una sola llamada batch al endpoint `info` (soportada por la API con
+/// multiples `arg[]=`) en vez de N llamadas individuales.
+pub fn aur_info(names: &[&str]) -> Result<std::collections::HashSet<String>> {
+    if names.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+    let mut url = String::from("https://aur.archlinux.org/rpc/v5/info?");
+    for (i, n) in names.iter().enumerate() {
+        if i > 0 {
+            url.push('&');
+        }
+        url.push_str("arg[]=");
+        url.push_str(&url_encode(n));
+    }
+    let body = get_json(&url)?;
+    let resp: AurResponse = serde_json::from_str(&body).context("JSON invalido del AUR")?;
+    Ok(resp.results.into_iter().map(|p| p.name).collect())
+}
+
 // -------------------------- Oficiales --------------------------
 
 #[derive(Deserialize)]
@@ -158,6 +181,16 @@ mod tests {
         let resp: AurResponse = serde_json::from_str(body).unwrap();
         assert_eq!(resp.results.len(), 1);
         assert_eq!(resp.results[0].name, "spotify");
+    }
+
+    #[test]
+    fn aur_info_response_handles_missing_packages() {
+        // La API devuelve un set vacio en results para los paquetes
+        // que no existen (no error). Verificamos que el parser acepta
+        // esa forma y devuelve un set vacio.
+        let body = r#"{"resultcount":0,"results":[],"type":"multiinfo","version":5}"#;
+        let resp: AurResponse = serde_json::from_str(body).unwrap();
+        assert!(resp.results.is_empty());
     }
 
     #[test]

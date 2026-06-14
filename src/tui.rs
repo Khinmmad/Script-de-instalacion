@@ -443,6 +443,10 @@ impl App {
         );
         merge_profile_into(&mut self.aur, &p.aur_packages, Source::Aur, &self.sys_state);
         self.sys_mirror_region = p.mirror_region.unwrap_or_default();
+        self.sys_locale = p.locale.unwrap_or_default();
+        self.sys_timezone = p.timezone.unwrap_or_default();
+        self.sys_keymap = p.keymap.unwrap_or_default();
+        self.sys_hostname = p.hostname.unwrap_or_default();
         self.status = format!("Perfil '{}' cargado.", p.name);
     }
 }
@@ -2135,6 +2139,10 @@ mod tests {
             official_packages: vec!["firefox".into(), "paquete-nuevo".into()],
             aur_packages: vec![],
             mirror_region: Some("Mexico".into()),
+            locale: Some("es_MX.UTF-8".into()),
+            timezone: Some("America/Mexico_City".into()),
+            keymap: Some("la-latin1".into()),
+            hostname: Some("mi-arch".into()),
         };
         app.apply_profile(prof);
         assert_eq!(DESKTOP_ENVIRONMENTS[app.de_index].id, "gnome");

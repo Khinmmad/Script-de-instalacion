@@ -13,6 +13,7 @@ mod repo_api;
 mod tui;
 mod update;
 mod validate;
+mod validate_profile;
 
 use std::process::ExitCode;
 
@@ -20,6 +21,7 @@ use anyhow::Result;
 
 use installer::{InstallOptions, Logger};
 use model::{format_list_or_none, format_system_settings, InstallPlan, Profile, SystemLabelStyle};
+use validate_profile::ValidateReport;
 
 use crate::detect::SystemStatus;
 use crate::estimate::PlanEstimate;
@@ -31,6 +33,7 @@ struct Cli {
     yes: bool,
     profile: Option<String>,
     list_profiles: bool,
+    validate_profile: Option<String>,
     help: bool,
     version: bool,
 }
@@ -41,6 +44,7 @@ fn parse_args() -> Cli {
         yes: false,
         profile: None,
         list_profiles: false,
+        validate_profile: None,
         help: false,
         version: false,
     };
@@ -53,6 +57,7 @@ fn parse_args() -> Cli {
             "--help" | "-h" => cli.help = true,
             "--version" | "-V" => cli.version = true,
             "--profile" | "-p" => cli.profile = args.next(),
+            "--validate-profile" => cli.validate_profile = args.next(),
             other => {
                 eprintln!("Argumento desconocido: {other}\n");
                 cli.help = true;
@@ -71,13 +76,18 @@ USO:
     arch-postinstall [OPCIONES]
 
 OPCIONES:
-    (sin opciones)        Lanza el asistente TUI interactivo.
-    -p, --profile <NOMBRE>  Instala directamente desde un perfil guardado.
-    -l, --list-profiles   Lista los perfiles guardados y sale.
-    -n, --dry-run         Muestra lo que haria sin ejecutar nada.
-    -y, --yes             No preguntar confirmacion (usa --noconfirm).
-    -h, --help            Muestra esta ayuda.
-    -V, --version         Muestra la version.
+    (sin opciones)            Lanza el asistente TUI interactivo.
+    -p, --profile <NOMBRE>    Instala directamente desde un perfil guardado.
+    -l, --list-profiles       Lista los perfiles guardados y sale.
+        --validate-profile <PATH>
+                              Valida un perfil TOML sin instalar nada.
+                              Comprueba formato de campos y existencia
+                              de paquetes. Sale 0 si todo OK, 1 si hay
+                              paquetes faltantes o campos invalidos.
+    -n, --dry-run             Muestra lo que haria sin ejecutar nada.
+    -y, --yes                 No preguntar confirmacion (usa --noconfirm).
+    -h, --help                Muestra esta ayuda.
+    -V, --version             Muestra la version.
 
 Los perfiles se guardan en:
     ~/.config/arch-postinstall/profiles/
@@ -278,6 +288,75 @@ fn run_plan(plan: InstallPlan, cli: &Cli, already_confirmed: bool) -> Result<()>
     Ok(())
 }
 
+/// Carga y valida un perfil TOML sin instalar nada. Pensado para CI
+/// y para autores de perfiles. Imprime un informe y devuelve el
+/// `ExitCode` apropiado: 0 si todo OK, 1 si hay paquetes faltantes o
+/// campos invalidos.
+fn cmd_validate_profile(path: &std::path::Path) -> ExitCode {
+    let profile = match profile::load_from_path(path) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("No se pudo cargar el perfil: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    println!("── Validacion del perfil '{}' ──", profile.name);
+    let report = validate_profile::validate(&profile, true);
+    print_validate_report(&report);
+
+    if !report.api_errors.is_empty() {
+        for err in &report.api_errors {
+            eprintln!("  ! error de red: {err}");
+        }
+        return ExitCode::FAILURE;
+    }
+    if report.is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// Imprime el informe de validacion en texto plano. Pensado para que
+/// sea facil de leer en CI (no usa colores).
+fn print_validate_report(r: &ValidateReport) {
+    println!("  Nombre: {}", r.profile_name);
+    if !r.fields.is_empty() {
+        println!("  Campos del sistema:");
+        for f in &r.fields {
+            let marker = if f.ok { "ok" } else { "INV" };
+            println!("    [{}] {}: {}", marker, f.name, f.value);
+        }
+    }
+    let total_off = r.found_official + r.missing_official.len();
+    let total_aur = r.found_aur + r.missing_aur.len();
+    println!(
+        "  Paquetes oficiales: {} total, {} encontrados, {} faltantes",
+        total_off,
+        r.found_official,
+        r.missing_official.len()
+    );
+    if !r.missing_official.is_empty() {
+        println!("    Faltantes: {}", r.missing_official.join(", "));
+    }
+    println!(
+        "  Paquetes AUR: {} total, {} encontrados, {} faltantes",
+        total_aur,
+        r.found_aur,
+        r.missing_aur.len()
+    );
+    if !r.missing_aur.is_empty() {
+        println!("    Faltantes: {}", r.missing_aur.join(", "));
+    }
+    println!();
+    if r.is_ok() {
+        println!("  Resultado: OK. El perfil es instalable.");
+    } else {
+        println!("  Resultado: hay problemas (ver arriba).");
+    }
+}
+
 fn main() -> ExitCode {
     // Si la app entra en panico con la TUI activa, restaura la terminal
     // antes de imprimir el error; si no, la consola queda inutilizable.
@@ -328,6 +407,11 @@ fn main() -> ExitCode {
             }
         }
         return ExitCode::SUCCESS;
+    }
+
+    // Validar un perfil TOML sin instalar nada. Pensado para CI.
+    if let Some(path) = &cli.validate_profile {
+        return cmd_validate_profile(std::path::Path::new(path));
     }
 
     // Modo perfil: instalar directamente desde un perfil guardado.

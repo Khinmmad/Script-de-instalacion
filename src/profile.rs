@@ -42,10 +42,17 @@ pub fn save(profile: &Profile) -> Result<PathBuf> {
 pub fn load(name: &str) -> Result<Profile> {
     let dir = profiles_dir()?;
     let file = dir.join(format!("{}.toml", sanitize_name(name)));
-    let body = fs::read_to_string(&file)
-        .with_context(|| format!("No se pudo leer el perfil {}", file.display()))?;
+    load_from_path(&file)
+}
+
+/// Carga un perfil desde una ruta arbitraria. Usado por
+/// `--validate-profile` para validar archivos antes de copiarlos al
+/// directorio de perfiles.
+pub fn load_from_path(path: &std::path::Path) -> Result<Profile> {
+    let body = fs::read_to_string(path)
+        .with_context(|| format!("No se pudo leer el perfil {}", path.display()))?;
     let profile: Profile =
-        toml::from_str(&body).with_context(|| format!("Perfil invalido: {}", file.display()))?;
+        toml::from_str(&body).with_context(|| format!("Perfil invalido: {}", path.display()))?;
     Ok(profile)
 }
 

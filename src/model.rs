@@ -279,6 +279,18 @@ pub struct Profile {
     /// `InstallPlan::mirror_region`.
     #[serde(default)]
     pub mirror_region: Option<String>,
+    /// Locale a generar (`LANG=...`). Equivale a `InstallPlan::locale`.
+    #[serde(default)]
+    pub locale: Option<String>,
+    /// Zona horaria IANA. Equivale a `InstallPlan::timezone`.
+    #[serde(default)]
+    pub timezone: Option<String>,
+    /// Distro de teclado de consola. Equivale a `InstallPlan::keymap`.
+    #[serde(default)]
+    pub keymap: Option<String>,
+    /// Hostname del equipo. Equivale a `InstallPlan::hostname`.
+    #[serde(default)]
+    pub hostname: Option<String>,
 }
 
 impl Profile {
@@ -290,6 +302,10 @@ impl Profile {
             official_packages: plan.official.clone(),
             aur_packages: plan.aur.clone(),
             mirror_region: plan.mirror_region.clone(),
+            locale: plan.locale.clone(),
+            timezone: plan.timezone.clone(),
+            keymap: plan.keymap.clone(),
+            hostname: plan.hostname.clone(),
         }
     }
 
@@ -300,8 +316,16 @@ impl Profile {
         let de = self.desktop_environment.and_then(nonempty_string);
         let dm = self.display_manager.and_then(nonempty_string);
         let region = self.mirror_region.and_then(nonempty_string);
+        let locale = self.locale.and_then(nonempty_string);
+        let tz = self.timezone.and_then(nonempty_string);
+        let km = self.keymap.and_then(nonempty_string);
+        let host = self.hostname.and_then(nonempty_string);
         let mut plan = InstallPlan::new(de, dm, self.official_packages, self.aur_packages);
         plan.mirror_region = region;
+        plan.locale = locale;
+        plan.timezone = tz;
+        plan.keymap = km;
+        plan.hostname = host;
         plan
     }
 }
