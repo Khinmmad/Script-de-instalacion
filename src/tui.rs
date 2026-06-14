@@ -17,7 +17,7 @@ use crate::detect::SystemStatus;
 use crate::model::{
     format_list_or_none, format_system_settings, InstallPlan, Profile, Source, SystemLabelStyle,
 };
-use crate::{profile, repo_api, validate};
+use crate::{options, profile, repo_api, validate};
 
 /// Un paquete seleccionable (curado o anadido por busqueda).
 #[derive(Clone)]
@@ -37,6 +37,7 @@ enum PickerTarget {
     Locale,
     Timezone,
     Keymap,
+    Mirror,
 }
 
 /// Estado del picker buscable. La lista completa se carga al abrir; el
@@ -91,6 +92,7 @@ enum Mode {
     PickLocale,
     PickTimezone,
     PickKeymap,
+    PickMirror,
     Aur,
     System,
     Search,
@@ -115,6 +117,7 @@ const MENU: &[&str] = &[
     "Paquetes oficiales",
     "Paquetes AUR",
     "Configuracion del sistema (locale, zona, teclado...)",
+    "Mirrors (pais/region para reflector)",
     "Buscar y anadir paquetes (oficial/AUR)",
     "Cargar perfil",
     "Guardar perfil",
@@ -128,11 +131,12 @@ const MENU_DRIVERS: usize = 1;
 const MENU_OFFICIAL: usize = 2;
 const MENU_AUR: usize = 3;
 const MENU_SYSTEM: usize = 4;
-const MENU_SEARCH: usize = 5;
-const MENU_LOAD: usize = 6;
-const MENU_SAVE: usize = 7;
-const MENU_INSTALL: usize = 8;
-const MENU_QUIT: usize = 9;
+const MENU_MIRROR: usize = 5;
+const MENU_SEARCH: usize = 6;
+const MENU_LOAD: usize = 7;
+const MENU_SAVE: usize = 8;
+const MENU_INSTALL: usize = 9;
+const MENU_QUIT: usize = 10;
 
 /// Numero de campos en el formulario de configuracion del sistema.
 const SYS_FIELDS: usize = 7;
@@ -197,6 +201,11 @@ struct App {
     sys_multilib: bool,
     sys_reboot: bool,
     sys_cleanup_orphans: bool,
+
+    // Region para reflector (pais/continente). Se elige desde un picker
+    // aparte porque la lista de paises es larga y no encaja en el
+    // formulario de arriba.
+    sys_mirror_region: String,
 }
 
 impl App {
@@ -289,6 +298,7 @@ impl App {
             sys_multilib,
             sys_reboot,
             sys_cleanup_orphans,
+            sys_mirror_region: String::new(),
             update_notice: crate::update::check_for_update(),
             update_dismissed: false,
             preflight: None,
@@ -355,6 +365,7 @@ impl App {
         plan.timezone = nonempty(&self.sys_timezone).filter(|s| validate::is_valid_timezone(s));
         plan.keymap = nonempty(&self.sys_keymap).filter(|s| validate::is_valid_keymap(s));
         plan.hostname = nonempty(&self.sys_hostname).filter(|s| validate::is_valid_hostname(s));
+        plan.mirror_region = nonempty(&self.sys_mirror_region);
         plan.enable_multilib = self.sys_multilib;
         plan.reboot_after = self.sys_reboot;
         plan.cleanup_orphans = self.sys_cleanup_orphans;
@@ -373,11 +384,13 @@ impl App {
         let timezone = nonempty(&self.sys_timezone);
         let keymap = nonempty(&self.sys_keymap);
         let hostname = nonempty(&self.sys_hostname);
+        let mirror_region = nonempty(&self.sys_mirror_region);
         let mut parts = format_system_settings(
             locale.as_deref(),
             timezone.as_deref(),
             keymap.as_deref(),
             hostname.as_deref(),
+            mirror_region.as_deref(),
             self.sys_multilib,
             self.sys_reboot,
             SystemLabelStyle::Short,
@@ -404,6 +417,7 @@ impl App {
             &self.sys_state,
         );
         merge_profile_into(&mut self.aur, &p.aur_packages, Source::Aur, &self.sys_state);
+        self.sys_mirror_region = p.mirror_region.unwrap_or_default();
         self.status = format!("Perfil '{}' cargado.", p.name);
     }
 }
@@ -541,7 +555,10 @@ pub fn run() -> Result<Outcome> {
                 KeyCode::Esc | KeyCode::Char('q') => break Outcome::Cancelled,
                 _ => {}
             },
-            Mode::PickLocale | Mode::PickTimezone | Mode::PickKeymap => {
+            Mode::PickLocale
+            | Mode::PickTimezone
+            | Mode::PickKeymap
+            | Mode::PickMirror => {
                 handle_picker(&mut app, key.code);
             }
             Mode::Main => {
@@ -699,6 +716,9 @@ fn handle_main(app: &mut App, code: KeyCode) -> Option<Outcome> {
                 app.sys_cursor = 0;
                 app.status = "Rellena lo que quieras configurar (vacio = no tocar).".into();
             }
+            MENU_MIRROR => {
+                open_picker(app, PickerTarget::Mirror);
+            }
             MENU_SEARCH => {
                 app.mode = Mode::Search;
                 app.typing = true;
@@ -765,18 +785,23 @@ fn open_picker(app: &mut App, target: PickerTarget) {
     let (title, options, current) = match target {
         PickerTarget::Locale => (
             "Selecciona locale",
-            crate::options::locales(),
+            options::locales(),
             app.sys_locale.clone(),
         ),
         PickerTarget::Timezone => (
             "Selecciona zona horaria",
-            crate::options::timezones(),
+            options::timezones(),
             app.sys_timezone.clone(),
         ),
         PickerTarget::Keymap => (
             "Selecciona teclado de consola",
-            crate::options::keymaps(),
+            options::keymaps(),
             app.sys_keymap.clone(),
+        ),
+        PickerTarget::Mirror => (
+            "Selecciona pais/region (reflector)",
+            options::mirror_regions(),
+            app.sys_mirror_region.clone(),
         ),
     };
     let current_trim = current.trim().to_string();
@@ -785,13 +810,24 @@ fn open_picker(app: &mut App, target: PickerTarget) {
         PickerTarget::Locale => Mode::PickLocale,
         PickerTarget::Timezone => Mode::PickTimezone,
         PickerTarget::Keymap => Mode::PickKeymap,
+        PickerTarget::Mirror => Mode::PickMirror,
     };
     app.status = "Escribe para filtrar · Enter elige · Esc cancela".into();
 }
 
+/// Modo al que vuelve el picker al confirmar/cancelar. Para los
+/// pickers del formulario de sistema vuelve a `System`; para el de
+/// mirrors (abierto desde el menu principal) vuelve a `Main`.
+fn picker_return_mode(target: PickerTarget) -> Mode {
+    match target {
+        PickerTarget::Mirror => Mode::Main,
+        _ => Mode::System,
+    }
+}
+
 /// Confirma la seleccion actual del picker. Si eligio "(Personalizado...)"
 /// va al modo texto para ese campo; si no, asigna el valor y vuelve al
-/// formulario de sistema.
+/// formulario de sistema (o al menu principal, si era el de mirrors).
 fn confirm_picker(app: &mut App) {
     let filtered = app.picker.filtered();
     let Some(picked) = filtered.get(app.picker.cursor) else {
@@ -800,30 +836,47 @@ fn confirm_picker(app: &mut App) {
         return;
     };
     if *picked == "(Personalizado...)" {
-        // Volvemos al formulario y abrimos el modo texto sobre el campo
-        // que el picker estaba editando.
-        let field_idx = match app.picker.target {
-            PickerTarget::Locale => 0,
-            PickerTarget::Timezone => 1,
-            PickerTarget::Keymap => 2,
-        };
-        app.sys_cursor = field_idx;
-        app.typing = true;
-        app.mode = Mode::System;
-        app.status = "Escribe el valor y Enter para confirmar.".into();
+        match app.picker.target {
+            PickerTarget::Locale | PickerTarget::Timezone | PickerTarget::Keymap => {
+                // Volvemos al formulario y abrimos el modo texto sobre el
+                // campo que el picker estaba editando.
+                let field_idx = match app.picker.target {
+                    PickerTarget::Locale => 0,
+                    PickerTarget::Timezone => 1,
+                    PickerTarget::Keymap => 2,
+                    _ => unreachable!(),
+                };
+                app.sys_cursor = field_idx;
+                app.typing = true;
+                app.mode = Mode::System;
+                app.status = "Escribe el valor y Enter para confirmar.".into();
+            }
+            PickerTarget::Mirror => {
+                // El valor custom es el texto que ya esta en el filtro.
+                let custom = app.picker.filter.trim().to_string();
+                if custom.is_empty() {
+                    app.status = "Escribe el pais en el filtro y Enter para confirmar.".into();
+                } else {
+                    app.sys_mirror_region = custom.clone();
+                    app.mode = Mode::Main;
+                    app.status = format!("Region seleccionada: {custom}");
+                }
+            }
+        }
         return;
     }
     match app.picker.target {
         PickerTarget::Locale => app.sys_locale = picked.to_string(),
         PickerTarget::Timezone => app.sys_timezone = picked.to_string(),
         PickerTarget::Keymap => app.sys_keymap = picked.to_string(),
+        PickerTarget::Mirror => app.sys_mirror_region = picked.to_string(),
     }
-    app.mode = Mode::System;
+    app.mode = picker_return_mode(app.picker.target);
     app.status = format!("Seleccionado: {picked}");
 }
 
 fn cancel_picker(app: &mut App) {
-    app.mode = Mode::System;
+    app.mode = picker_return_mode(app.picker.target);
     app.status = "Picker cancelado.".into();
 }
 
@@ -1011,7 +1064,10 @@ fn draw(f: &mut Frame, app: &mut App) {
         Mode::LoadProfile => draw_load_profile(f, chunks[1], app),
         Mode::SaveProfile => draw_save_profile(f, chunks[1], app),
         Mode::Review => draw_review(f, chunks[1], app),
-        Mode::PickLocale | Mode::PickTimezone | Mode::PickKeymap => draw_picker(f, chunks[1], app),
+        Mode::PickLocale
+        | Mode::PickTimezone
+        | Mode::PickKeymap
+        | Mode::PickMirror => draw_picker(f, chunks[1], app),
     }
     draw_status(f, chunks[2], app);
 }
@@ -1115,6 +1171,9 @@ fn draw_main(f: &mut Frame, area: Rect, app: &App) {
     let sys_summary = app.system_summary();
     if !sys_summary.is_empty() {
         summaries[MENU_SYSTEM] = format!("[ {sys_summary} ]");
+    }
+    if !app.sys_mirror_region.is_empty() {
+        summaries[MENU_MIRROR] = format!("[ {} ]", app.sys_mirror_region);
     }
 
     // Resumen del plan: cuenta cuantos paquetes iran al pacman/yay y cuantos
@@ -1845,14 +1904,15 @@ fn review_estimate_section(est: &crate::estimate::PlanEstimate) -> Vec<Line<'sta
     out
 }
 
-/// Lineas con locale/zona/teclado/hostname/multilib/reiniciar, o vacias si
-/// el usuario no toco ninguno de esos campos.
+/// Lineas con locale/zona/teclado/hostname/mirrors/multilib/reiniciar, o
+/// vacias si el usuario no toco ninguno de esos campos.
 fn review_system_section(plan: &InstallPlan) -> Vec<Line<'static>> {
     let sys = format_system_settings(
         plan.locale.as_deref(),
         plan.timezone.as_deref(),
         plan.keymap.as_deref(),
         plan.hostname.as_deref(),
+        plan.mirror_region.as_deref(),
         plan.enable_multilib,
         plan.reboot_after,
         SystemLabelStyle::Detailed,
@@ -2036,6 +2096,7 @@ mod tests {
             display_manager: Some("gdm".into()),
             official_packages: vec!["firefox".into(), "paquete-nuevo".into()],
             aur_packages: vec![],
+            mirror_region: Some("Mexico".into()),
         };
         app.apply_profile(prof);
         assert_eq!(DESKTOP_ENVIRONMENTS[app.de_index].id, "gnome");

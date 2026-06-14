@@ -73,6 +73,9 @@ pub struct InstallPlan {
     pub keymap: Option<String>,
     /// Hostname del equipo. None = no tocar.
     pub hostname: Option<String>,
+    /// Pais/region para `reflector --country` (ej. "Mexico", "Spain").
+    /// None = dejar /etc/pacman.d/mirrorlist como esta.
+    pub mirror_region: Option<String>,
     /// Habilitar el repositorio [multilib] (Steam, libs de 32 bits).
     pub enable_multilib: bool,
     /// Reiniciar automaticamente al terminar.
@@ -110,11 +113,13 @@ pub enum SystemLabelStyle {
 /// recibidos. Las opciones vacias no contribuyen; los flags solo aparecen si
 /// estan activos. Centraliza el formato para que la CLI, el menu y la
 /// pantalla de revision nunca se contradigan.
+#[allow(clippy::too_many_arguments)]
 pub fn format_system_settings(
     locale: Option<&str>,
     timezone: Option<&str>,
     keymap: Option<&str>,
     hostname: Option<&str>,
+    mirror_region: Option<&str>,
     multilib: bool,
     reboot: bool,
     style: SystemLabelStyle,
@@ -134,6 +139,9 @@ pub fn format_system_settings(
             if hostname.is_some() {
                 out.push("hostname".into());
             }
+            if mirror_region.is_some() {
+                out.push("mirrors".into());
+            }
         }
         SystemLabelStyle::Detailed => {
             if let Some(v) = locale {
@@ -147,6 +155,9 @@ pub fn format_system_settings(
             }
             if let Some(v) = hostname {
                 out.push(format!("hostname={v}"));
+            }
+            if let Some(v) = mirror_region {
+                out.push(format!("mirrors={v}"));
             }
         }
     }
@@ -181,6 +192,7 @@ impl InstallPlan {
             timezone: None,
             keymap: None,
             hostname: None,
+            mirror_region: None,
             enable_multilib: false,
             reboot_after: false,
             cleanup_orphans: false,
@@ -263,6 +275,10 @@ pub struct Profile {
     pub official_packages: Vec<String>,
     #[serde(default)]
     pub aur_packages: Vec<String>,
+    /// Pais/region para `reflector --country`. Equivale a
+    /// `InstallPlan::mirror_region`.
+    #[serde(default)]
+    pub mirror_region: Option<String>,
 }
 
 impl Profile {
@@ -273,6 +289,7 @@ impl Profile {
             display_manager: plan.display_manager.clone(),
             official_packages: plan.official.clone(),
             aur_packages: plan.aur.clone(),
+            mirror_region: plan.mirror_region.clone(),
         }
     }
 
@@ -282,7 +299,10 @@ impl Profile {
         // para no generar servicios basura tipo `systemctl enable .service`.
         let de = self.desktop_environment.and_then(nonempty_string);
         let dm = self.display_manager.and_then(nonempty_string);
-        InstallPlan::new(de, dm, self.official_packages, self.aur_packages)
+        let region = self.mirror_region.and_then(nonempty_string);
+        let mut plan = InstallPlan::new(de, dm, self.official_packages, self.aur_packages);
+        plan.mirror_region = region;
+        plan
     }
 }
 

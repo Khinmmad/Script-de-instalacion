@@ -199,6 +199,74 @@ fn fallback_keymaps() -> Vec<String> {
     v.into_iter().map(String::from).collect()
 }
 
+/// Paises/regiones soportados por `reflector --country`. Lista corta
+/// con los mas comunes en America y Europa, ordenada alfabeticamente.
+/// El usuario puede tipear un valor personalizado para anadir otros
+/// (el picker tiene la opcion "(Personalizado...)" al principio).
+pub fn mirror_regions() -> Vec<String> {
+    vec![
+        "Argentina".into(),
+        "Australia".into(),
+        "Austria".into(),
+        "Belarus".into(),
+        "Belgium".into(),
+        "Bolivia".into(),
+        "Brazil".into(),
+        "Bulgaria".into(),
+        "Canada".into(),
+        "Chile".into(),
+        "China".into(),
+        "Colombia".into(),
+        "Costa Rica".into(),
+        "Czech Republic".into(),
+        "Denmark".into(),
+        "Ecuador".into(),
+        "Finland".into(),
+        "France".into(),
+        "Germany".into(),
+        "Greece".into(),
+        "Guatemala".into(),
+        "Hong Kong".into(),
+        "Hungary".into(),
+        "Iceland".into(),
+        "India".into(),
+        "Indonesia".into(),
+        "Ireland".into(),
+        "Israel".into(),
+        "Italy".into(),
+        "Japan".into(),
+        "Kazakhstan".into(),
+        "Mexico".into(),
+        "Netherlands".into(),
+        "New Zealand".into(),
+        "Norway".into(),
+        "Paraguay".into(),
+        "Peru".into(),
+        "Philippines".into(),
+        "Poland".into(),
+        "Portugal".into(),
+        "Romania".into(),
+        "Russia".into(),
+        "Singapore".into(),
+        "Slovakia".into(),
+        "Slovenia".into(),
+        "South Africa".into(),
+        "South Korea".into(),
+        "Spain".into(),
+        "Sweden".into(),
+        "Switzerland".into(),
+        "Taiwan".into(),
+        "Thailand".into(),
+        "Turkey".into(),
+        "Ukraine".into(),
+        "United Kingdom".into(),
+        "United States".into(),
+        "Uruguay".into(),
+        "Venezuela".into(),
+        "Vietnam".into(),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,6 +284,14 @@ mod tests {
         let k = fallback_keymaps();
         assert!(k.len() >= 5);
         assert!(k.windows(2).all(|w| w[0] <= w[1]));
+
+        let m = mirror_regions();
+        assert!(m.len() >= 10);
+        assert!(m.windows(2).all(|w| w[0] <= w[1]));
+        // Paises clave: Mexico, US, Espana, etc.
+        assert!(m.contains(&"Mexico".to_string()));
+        assert!(m.contains(&"United States".to_string()));
+        assert!(m.contains(&"Spain".to_string()));
     }
 
     #[test]

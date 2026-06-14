@@ -97,6 +97,9 @@ impl PreflightReport {
         if let Some(c) = check_disk_for_estimate(plan, sys) {
             report.checks.push(c);
         }
+        if let Some(region) = &plan.mirror_region {
+            report.checks.push(check_reflector(region));
+        }
         report
     }
 
@@ -319,6 +322,26 @@ fn check_aur_tool(name: &'static str, pkg: &str) -> PreflightCheck {
         PreflightCheck::warn(
             "herramienta AUR",
             format!("{pkg} no esta instalado; el instalador lo agregara al setup"),
+        )
+    }
+}
+
+/// Verifica que `reflector` este disponible si el usuario eligio una
+/// region para los mirrors. No es bloqueante: el instalador instala
+/// `reflector` con pacman si falta. Pero avisamos para que el usuario
+/// sepa que tendra que esperar ese paso extra.
+fn check_reflector(region: &str) -> PreflightCheck {
+    if command_exists("reflector") {
+        PreflightCheck::ok(
+            "reflector",
+            format!("ok (region {region} se aplicara antes de -Syu)"),
+        )
+    } else {
+        PreflightCheck::warn(
+            "reflector",
+            format!(
+                "no esta instalado; el instalador lo agregara antes de aplicar la region {region}"
+            ),
         )
     }
 }

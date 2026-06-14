@@ -131,6 +131,30 @@ fn yay_present() -> bool {
         .unwrap_or(false)
 }
 
+/// True si `reflector` ya esta instalado en el PATH.
+fn reflector_present() -> bool {
+    Command::new("reflector")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Asegura que `reflector` este instalado. Si no lo esta, lo instala
+/// con pacman. Devuelve `true` si esta listo para usar al final.
+fn ensure_reflector(log: &mut Logger, opts: &InstallOptions) -> bool {
+    if reflector_present() {
+        return true;
+    }
+    log.log("  reflector no encontrado: instalando con pacman...");
+    let mut args: Vec<&str> = vec!["pacman", "-S", "--needed"];
+    if opts.noconfirm {
+        args.push("--noconfirm");
+    }
+    args.push("reflector");
+    run(log, opts, "sudo", &args)
+}
+
 /// Ejecuta un comando registrandolo. Devuelve true si tuvo exito. En caso
 /// de fallo captura `stderr` y muestra las primeras lineas junto a una
 /// sugerencia contextual segun el programa, para que el usuario sepa que
@@ -688,6 +712,50 @@ pub fn execute(plan: &InstallPlan, opts: &InstallOptions, log: &mut Logger) -> V
     if plan.enable_multilib {
         log.log("==> Habilitando el repositorio [multilib]");
         results.push(enable_multilib(log, opts));
+    }
+
+    // 1b. Mirror selection via reflector. Lo hacemos antes de -Syu para
+    //     que el primer sync use los mirrors que el usuario eligio.
+    //     Si reflector no esta, lo instalamos con pacman (que ya tiene
+    //     un mirrorlist de fallback); si falla, seguimos con los
+    //     mirrors actuales y -Syu usa esos.
+    if let Some(region) = &plan.mirror_region {
+        log.log(&format!(
+            "==> Seleccionando mirrors con reflector (--country {region})"
+        ));
+        if !ensure_reflector(log, opts) {
+            log.log("    ! no se pudo instalar reflector; sigo con mirrors actuales");
+        } else if opts.dry_run {
+            // reflector no tiene --dry-run, asi que simulamos el comando
+            // en el log y seguimos.
+            log.log(&format!(
+                "[dry-run] sudo reflector --country {region} --age 12 \
+                 --protocol https --sort rate --save /etc/pacman.d/mirrorlist"
+            ));
+        } else {
+            let ok = run(
+                log,
+                opts,
+                "sudo",
+                &[
+                    "reflector",
+                    "--country",
+                    region,
+                    "--age",
+                    "12",
+                    "--protocol",
+                    "https",
+                    "--sort",
+                    "rate",
+                    "--save",
+                    "/etc/pacman.d/mirrorlist",
+                ],
+            );
+            results.push(StepResult {
+                label: format!("reflector ({region})"),
+                ok,
+            });
+        }
     }
 
     // 2. Sync. Si falla seguimos, pero los pasos posteriores pueden fallar
