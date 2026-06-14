@@ -724,6 +724,13 @@ fn handle_main(app: &mut App, code: KeyCode) -> Option<Outcome> {
                 if plan.is_empty() {
                     app.status = "Nada que instalar: elige un entorno o marca paquetes.".into();
                 } else {
+                    // Invalidar preflight y estimate: al volver al menu
+                    // el usuario puede cambiar paquetes/sistema y los
+                    // valores cacheados dejarian de corresponder al plan
+                    // actual. Se recalculan perezosamente en el primer
+                    // draw_review.
+                    app.preflight = None;
+                    app.estimate = None;
                     app.mode = Mode::Review;
                     app.status = "Revisa el plan. Enter confirma, Esc vuelve al menu.".into();
                 }
