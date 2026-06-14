@@ -881,6 +881,23 @@ fn draw_main(f: &mut Frame, area: Rect, app: &App) {
         summaries[MENU_SYSTEM] = format!("[ {sys_summary} ]");
     }
 
+    // Resumen del plan: cuenta cuantos paquetes iran al pacman/yay y cuantos
+    // ya estan en el sistema, usando la deteccion. Asi el usuario ve de un
+    // vistazo cuanto trabajo queda sin tener que entrar a la revision.
+    let plan = app.build_plan();
+    let to_install = plan
+        .official
+        .iter()
+        .filter(|p| !app.sys_state.official.contains(*p) && !app.sys_state.aur.contains(*p))
+        .count()
+        + plan
+            .aur
+            .iter()
+            .filter(|p| !app.sys_state.official.contains(*p) && !app.sys_state.aur.contains(*p))
+            .count();
+    let already = plan.official.len() + plan.aur.len() - to_install;
+    summaries[MENU_INSTALL] = format!("[ {to_install} por instalar, {already} ya en sistema ]");
+
     let items: Vec<ListItem> = MENU
         .iter()
         .enumerate()
