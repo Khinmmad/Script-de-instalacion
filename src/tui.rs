@@ -14,6 +14,7 @@ use ratatui::{
 
 use crate::catalog::{BASE_PACKAGES, DESKTOP_ENVIRONMENTS, DRIVERS, EXTRA_PACKAGES};
 use crate::detect::SystemStatus;
+use crate::hardware;
 use crate::model::{
     format_list_or_none, format_system_settings, InstallPlan, Profile, Source, SystemLabelStyle,
 };
@@ -260,7 +261,22 @@ impl App {
             })
             .collect();
 
-        let drivers = DRIVERS.iter().map(|d| d.default_on).collect();
+        // Auto-deteccion de drivers: si encontramos la GPU y/o el
+        // microcode, los marcamos ademas del default_on. El usuario
+        // puede cambiarlos en la pantalla de drivers si quiere.
+        let mut drivers = DRIVERS.iter().map(|d| d.default_on).collect::<Vec<_>>();
+        if let Some(gpu) = hardware::detect_gpu() {
+            let id = gpu.catalog_id();
+            if let Some(idx) = DRIVERS.iter().position(|d| d.id == id) {
+                drivers[idx] = true;
+            }
+        }
+        if let Some(mc) = hardware::detect_microcode() {
+            let id = mc.catalog_id();
+            if let Some(idx) = DRIVERS.iter().position(|d| d.id == id) {
+                drivers[idx] = true;
+            }
+        }
         let drivers_installed: Vec<bool> = DRIVERS
             .iter()
             .map(|d| {

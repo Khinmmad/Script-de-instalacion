@@ -4,6 +4,7 @@
 mod catalog;
 mod detect;
 mod estimate;
+mod hardware;
 mod installer;
 mod model;
 mod options;
