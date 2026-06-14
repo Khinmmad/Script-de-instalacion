@@ -25,10 +25,10 @@ bonito".
 
 ## Estado actual
 
-- **Version**: `0.7.0` (en `Cargo.toml`)
+- **Version**: `0.8.0` (en `Cargo.toml`)
 - **Rama**: `main`, limpia, sin cambios sin commitear
-- **Ultimo commit**: `34e9881` (Pickers buscables)
-- **Tests**: 42/42 pasan
+- **Ultimo commit**: `f603d43` (Bump version 0.7.0 → 0.8.0)
+- **Tests**: 50/50 pasan
 - **Linters**: `cargo clippy --all-targets -- -D warnings` limpio,
   `cargo fmt --check` limpio
 - **Binario**: `cargo build --release` produce
@@ -49,6 +49,7 @@ script-de-instalacion-new/
     ├── tui.rs        # TUI: modos, draw_*, handle_*, pickers
     ├── installer.rs  # ejecucion: pacman, yay, sudo_copy_file, ensure_yay
     ├── preflight.rs  # checks pre-instalacion (red, sudo, disco, etc.)
+    ├── estimate.rs   # estimacion de espacio (pacman -Si, df, AUR=unknown)
     ├── detect.rs     # SystemStatus: que hay instalado
     ├── options.rs    # listas para pickers (locales, zonas, keymaps)
     ├── update.rs     # check de actualizacion via GitHub
@@ -158,11 +159,13 @@ fuera revisable:
 - **Modulo `preflight.rs`** (7 checks + 3 AUR)
 - **Modulo `update.rs`** (GitHub releases, silencioso si falla)
 - **Modulo `options.rs`** (listas para pickers desde el sistema)
+- **Modulo `estimate.rs`** (download/install size con `pacman -Si` + `df`)
 - **TUI**:
   - Paquetes/drivers ya instalados marcados con `✓` verde
   - Formulario de sistema pre-rellenado con valores actuales
   - Pantalla de revision: pre-flight, "Por instalar / Ya instalado",
-    "Servicios a habilitar / ya activos", updates disponibles
+    "Servicios a habilitar / ya activos", updates disponibles,
+    "Espacio: descargar X, instalar Y, libre Z (ok/no-cabe)"
   - Pickers buscables para locale/zona/teclado (Enter abre, `(Personalizado...)` para valor fuera de la lista)
   - `s` en revision = salir sin hacer nada
   - `p` en revision = re-ejecutar pre-flight
@@ -173,14 +176,18 @@ fuera revisable:
   - Skip de paquetes ya instalados (con log explicito)
   - Captura stderr y sugerencias contextuales por programa
   - Panic hook con mensaje claro
+- **CLI** (`show_plan`): muestra la estimacion de espacio en texto plano
 
 ## Trabajo pendiente / ideas
 
 - **Mirror selection** (geografico) - affecta velocidad de descarga
-- **Disk space estimate** antes de instalar (sumar `pacman -Si` sizes)
 - **BTRFS/snapper snapshot** antes de instalar (rollback)
 - **Per-package notes** en perfiles (overkill?)
 - **Mouse support** en la TUI (overkill?)
+- **Preflight mas inteligente**: el check de disco deberia contrastar
+  libre vs estimado (warn si no alcanza), no solo umbrales absolutos
+- **Bug**: `app.estimate` y `app.preflight` quedan stale si el usuario
+  vuelve al menu, cambia el plan, y re-entra a revision
 
 ## Notas personales del agente
 
