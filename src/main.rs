@@ -3,6 +3,7 @@
 
 mod catalog;
 mod detect;
+mod estimate;
 mod installer;
 mod model;
 mod options;
@@ -21,6 +22,7 @@ use installer::{InstallOptions, Logger};
 use model::{format_list_or_none, format_system_settings, InstallPlan, Profile, SystemLabelStyle};
 
 use crate::detect::SystemStatus;
+use crate::estimate::PlanEstimate;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -153,6 +155,11 @@ fn show_plan(plan: &InstallPlan, sys: &SystemStatus) {
     }
     println!("  Servicios      : {}", format_list_or_none(&svcs));
 
+    // Estimacion de espacio: lo que se va a descargar / instalar y lo
+    // que queda libre. Si falla o no hay nada que instalar, se omite.
+    let est = crate::estimate::estimate(&plan.official, &plan.aur, &sys.official, &sys.aur);
+    print_estimate(&est);
+
     let sys_settings = format_system_settings(
         plan.locale.as_deref(),
         plan.timezone.as_deref(),
@@ -166,6 +173,40 @@ fn show_plan(plan: &InstallPlan, sys: &SystemStatus) {
         println!("  Sistema        : {}", sys_settings.join(", "));
     }
     println!();
+}
+
+/// Imprime una linea con la estimacion de espacio en texto plano.
+/// Si no hay nada que instalar o todo es desconocido, no imprime nada.
+fn print_estimate(est: &PlanEstimate) {
+    use crate::estimate::human_bytes;
+    if est.total_install() == 0 && est.total_download() == 0 && est.total_unknown() == 0 {
+        return;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if est.total_download() > 0 {
+        parts.push(format!("descargar {}", human_bytes(est.total_download())));
+    }
+    if est.total_install() > 0 {
+        parts.push(format!("instalar {}", human_bytes(est.total_install())));
+    }
+    let unknown = est.total_unknown();
+    if unknown > 0 {
+        parts.push(format!("{unknown} sin tamano"));
+    }
+    let fits = match est.fits() {
+        Some(true) => "ok",
+        Some(false) => "NO CABE",
+        None => "?",
+    };
+    let free = match est.free_bytes {
+        Some(b) => format!("libre {} en /", human_bytes(b)),
+        None => "libre: desconocido".to_string(),
+    };
+    println!(
+        "  Espacio        : {}  ({}, {free})",
+        parts.join(", "),
+        fits
+    );
 }
 
 /// Construye las opciones del instalador, incluyendo los paquetes que ya

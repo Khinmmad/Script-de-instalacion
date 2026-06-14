@@ -169,6 +169,10 @@ struct App {
     // todavia para el plan actual.
     preflight: Option<crate::preflight::PreflightReport>,
 
+    // Estimacion del espacio que ocupara la instalacion (se calcula al
+    // entrar a la pantalla de revision). `None` = todavia sin calcular.
+    estimate: Option<crate::estimate::PlanEstimate>,
+
     // Estado del picker activo. Solo se usa en los modos Pick*.
     // Mantenerlo siempre presente (no en Option) evita tener que
     // inicializarlo a mano cada vez.
@@ -288,6 +292,7 @@ impl App {
             update_notice: crate::update::check_for_update(),
             update_dismissed: false,
             preflight: None,
+            estimate: None,
             // Picker inerte hasta que el usuario lo abra desde el formulario
             // de sistema; los campos no importan mientras no este activo.
             picker: PickerState::new("", Vec::new(), String::new(), PickerTarget::Locale),
@@ -1567,12 +1572,25 @@ fn draw_review(f: &mut Frame, area: Rect, app: &mut App) {
         .preflight
         .get_or_insert_with(|| crate::preflight::PreflightReport::run(!plan.aur.is_empty()));
 
+    // La estimacion de espacio se calcula una vez (pacman -Si no cambia
+    // a cada redibujado). Es best-effort: si pacman no responde o no
+    // hay red, simplemente se omite la seccion.
+    let estimate = app.estimate.get_or_insert_with(|| {
+        crate::estimate::estimate(
+            &plan.official,
+            &plan.aur,
+            &app.sys_state.official,
+            &app.sys_state.aur,
+        )
+    });
+
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(""));
     lines.extend(review_preflight_section(report));
     lines.extend(review_env_section(&plan));
     lines.push(Line::from(""));
     lines.extend(review_packages_section(&plan, &app.sys_state));
+    lines.extend(review_estimate_section(estimate));
     lines.extend(review_system_section(&plan));
     lines.push(Line::from(""));
     lines.push(review_footer());
@@ -1769,6 +1787,53 @@ fn join_with_source(official: &[String], aur: &[String]) -> String {
         parts.push(format!("{a} (aur)"));
     }
     format_list_or_none(&parts)
+}
+
+/// Seccion de estimacion de espacio: cuanto se va a descargar, cuanto va
+/// a ocupar, cuanto libre queda. Si no hay nada que instalar o la
+/// estimacion fallo, devuelve una lista vacia (la seccion se omite).
+/// El color del texto refleja si el libre alcanza o no: verde si
+/// alcanza, rojo si no, gris si no sabemos.
+fn review_estimate_section(est: &crate::estimate::PlanEstimate) -> Vec<Line<'static>> {
+    use crate::estimate::human_bytes;
+    if est.total_install() == 0 && est.total_download() == 0 && est.total_unknown() == 0 {
+        return Vec::new();
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if est.total_download() > 0 {
+        parts.push(format!("descargar {}", human_bytes(est.total_download())));
+    }
+    if est.total_install() > 0 {
+        parts.push(format!("instalar {}", human_bytes(est.total_install())));
+    }
+    let unknown = est.total_unknown();
+    if unknown > 0 {
+        parts.push(format!("{unknown} sin tamano"));
+    }
+    let fits_color = match est.fits() {
+        Some(true) => Color::Green,
+        Some(false) => Color::Red,
+        None => Color::Gray,
+    };
+    let free = match est.free_bytes {
+        Some(b) => format!("libre {} en /", human_bytes(b)),
+        None => "libre: desconocido".to_string(),
+    };
+    let mut out = Vec::new();
+    out.push(Line::from(vec![
+        Span::styled(
+            "  Espacio:  ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(parts.join(", "), Style::default().fg(Color::Gray)),
+    ]));
+    out.push(Line::from(Span::styled(
+        format!("    {free}"),
+        Style::default().fg(fits_color),
+    )));
+    out
 }
 
 /// Lineas con locale/zona/teclado/hostname/multilib/reiniciar, o vacias si

@@ -15,6 +15,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+use crate::estimate::{free_space, human_bytes};
 use crate::installer::Logger;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,7 +194,7 @@ fn check_pacman_db() -> PreflightCheck {
 fn check_disk_space() -> PreflightCheck {
     // 2 GB es el minimo absoluto; 5 GB es comodo. Avisamos si < 2 GB,
     // bloqueamos solo si < 500 MB.
-    let avail = free_bytes("/");
+    let avail = free_space("/");
     match avail {
         None => PreflightCheck::warn("espacio en disco", "no se pudo leer df"),
         Some(b) if b < 500 * 1024 * 1024 => PreflightCheck::fail(
@@ -259,40 +260,9 @@ fn command_exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn free_bytes(mount: &str) -> Option<u64> {
-    let out = Command::new("df").args(["-B1", mount]).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let line = stdout.lines().nth(1)?;
-    let cols: Vec<&str> = line.split_whitespace().collect();
-    cols.get(3).and_then(|s| s.parse().ok())
-}
-
-fn human_bytes(b: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-    if b >= GB {
-        format!("{:.1} GB", b as f64 / GB as f64)
-    } else if b >= MB {
-        format!("{:.0} MB", b as f64 / MB as f64)
-    } else {
-        format!("{:.0} KB", b as f64 / KB as f64)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn human_bytes_format() {
-        assert_eq!(human_bytes(500), "0 KB");
-        assert_eq!(human_bytes(2 * 1024 * 1024), "2 MB");
-        assert_eq!(human_bytes(5 * 1024 * 1024 * 1024), "5.0 GB");
-    }
 
     #[test]
     fn report_runs_all_checks() {
