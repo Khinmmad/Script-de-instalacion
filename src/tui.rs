@@ -111,6 +111,11 @@ struct App {
     update_notice: Option<String>,
     update_dismissed: bool,
 
+    // Resultado del pre-flight (se ejecuta al entrar a la pantalla de
+    // revision). Mientras sea `None` significa que no se ha calculado
+    // todavia para el plan actual.
+    preflight: Option<crate::preflight::PreflightReport>,
+
     // Busqueda
     search_source: Source,
     search_input: String,
@@ -224,6 +229,7 @@ impl App {
             sys_cleanup_orphans,
             update_notice: crate::update::check_for_update(),
             update_dismissed: false,
+            preflight: None,
         }
     }
 
@@ -412,7 +418,7 @@ pub fn run() -> Result<Outcome> {
     let mut app = App::new();
 
     let outcome = loop {
-        terminal.draw(|f| draw(f, &app))?;
+        terminal.draw(|f| draw(f, &mut app))?;
 
         let Event::Key(key) = event::read()? else {
             continue;
@@ -491,6 +497,14 @@ pub fn run() -> Result<Outcome> {
                 }
                 KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Main,
                 KeyCode::Char('s') => break Outcome::Cancelled,
+                KeyCode::Char('p') => {
+                    // Re-corre pre-flight manualmente (la primera vez
+                    // se ejecuta solo al pintar la pantalla).
+                    let plan = app.build_plan();
+                    app.preflight =
+                        Some(crate::preflight::PreflightReport::run(!plan.aur.is_empty()));
+                    app.status = "Pre-flight re-ejecutado.".into();
+                }
                 _ => {}
             },
         }
@@ -780,7 +794,7 @@ fn source_label(s: Source) -> &'static str {
 
 // ----------------------------- Renderizado -----------------------------
 
-fn draw(f: &mut Frame, app: &App) {
+fn draw(f: &mut Frame, app: &mut App) {
     let chunks = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(5),
@@ -1299,11 +1313,18 @@ fn draw_save_profile(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(p, area);
 }
 
-fn draw_review(f: &mut Frame, area: Rect, app: &App) {
+fn draw_review(f: &mut Frame, area: Rect, app: &mut App) {
     let plan = app.build_plan();
+
+    // El pre-flight se calcula la primera vez que se pinta la pantalla.
+    // Despues se puede re-ejecutar con 'p'.
+    let report = app
+        .preflight
+        .get_or_insert_with(|| crate::preflight::PreflightReport::run(!plan.aur.is_empty()));
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(""));
+    lines.extend(review_preflight_section(report));
     lines.extend(review_env_section(&plan));
     lines.push(Line::from(""));
     lines.extend(review_packages_section(&plan, &app.sys_state));
@@ -1317,6 +1338,58 @@ fn draw_review(f: &mut Frame, area: Rect, app: &App) {
             .title(" Revision del plan "),
     );
     f.render_widget(p, area);
+}
+
+/// Seccion de pre-flight en la pantalla de revision. Muestra cada check
+/// con su marcador y, si hay warnings o fallos, lo deja claro arriba.
+fn review_preflight_section(report: &crate::preflight::PreflightReport) -> Vec<Line<'static>> {
+    use crate::preflight::CheckStatus;
+    let mut out = Vec::new();
+    let header = if report.has_failures() {
+        Span::styled(
+            "  Pre-flight: HAY FALLOS  ",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )
+    } else if report.has_warnings() {
+        Span::styled(
+            "  Pre-flight: ok (con avisos)  ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(
+            "  Pre-flight: todo bien  ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+    out.push(Line::from(header));
+    for c in &report.checks {
+        let (marker, color) = match c.status {
+            CheckStatus::Ok => ("  OK  ", Color::Green),
+            CheckStatus::Warn => (" WARN ", Color::Yellow),
+            CheckStatus::Fail => (" FAIL ", Color::Red),
+        };
+        out.push(Line::from(vec![
+            Span::styled(
+                format!("  [{marker}] "),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{:<22} ", c.name),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(c.detail.clone(), Style::default().fg(Color::Gray)),
+        ]));
+    }
+    out.push(Line::from(Span::styled(
+        "  (pulsa 'p' para re-ejecutar pre-flight)",
+        Style::default().fg(Color::DarkGray),
+    )));
+    out.push(Line::from(""));
+    out
 }
 
 /// Lineas con el entorno elegido y su display manager.
@@ -1542,7 +1615,7 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         Mode::System => "↑/↓: campo · Enter/i: editar · Space: marcar · q: menu",
         Mode::LoadProfile => "↑/↓: mover · Enter: cargar · q: menu",
         Mode::SaveProfile => "Escribe el nombre · Enter: guardar · Esc: cancelar",
-        Mode::Review => "Enter: instalar · s: salir sin hacer nada · Esc: volver al menu",
+        Mode::Review => "Enter: instalar · p: re-ejecutar pre-flight · s: salir · Esc: volver",
         _ => "↑/↓: mover · Space: marcar · q: volver al menu",
     };
     let mut text: Vec<Line> = Vec::new();

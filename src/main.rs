@@ -5,6 +5,7 @@ mod catalog;
 mod detect;
 mod installer;
 mod model;
+mod preflight;
 mod profile;
 mod repo_api;
 mod tui;
@@ -188,6 +189,20 @@ fn run_plan(plan: InstallPlan, cli: &Cli, already_confirmed: bool) -> Result<()>
 
     let sys = SystemStatus::detect();
     show_plan(&plan, &sys);
+
+    // Pre-flight en CLI: imprime el informe y aborta si hay fallos
+    // criticos, salvo que el usuario use --yes.
+    let report = preflight::PreflightReport::run(!plan.aur.is_empty());
+    if report.has_failures() && !cli.yes && !cli.dry_run {
+        eprintln!("\nPre-flight checks con fallos:");
+        for c in &report.checks {
+            if c.status == preflight::CheckStatus::Fail {
+                eprintln!("  [FAIL] {:<22} {}", c.name, c.detail);
+            }
+        }
+        eprintln!("\nUsa --yes para continuar de todas formas.");
+        return Ok(());
+    }
 
     if installer::is_root() {
         eprintln!("Advertencia: estas corriendo como root. makepkg/yay no deben usarse como root.");

@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use chrono::Local;
 
 use crate::model::InstallPlan;
+use crate::preflight::PreflightReport;
 
 /// Resultado de un paso individual de instalacion.
 pub struct StepResult {
@@ -666,6 +667,19 @@ fn configure_boot(
 /// con `ok: false` y seguimos con el siguiente.
 pub fn execute(plan: &InstallPlan, opts: &InstallOptions, log: &mut Logger) -> Vec<StepResult> {
     let mut results = Vec::new();
+
+    // 0. Pre-flight checks: detectan problemas comunes de un sistema
+    //    recien instalado (sin sudo configurado, sin internet, DB
+    //    bloqueada, sin espacio, sin git/base-devel para AUR). Se
+    //    registran en el log; los `Fail` no abortan la instalacion
+    //    (el usuario podra ver el porque en el log mas tarde), pero
+    //    hacen que varios pasos siguientes fallen de forma esperada.
+    let report = PreflightReport::run(!plan.aur.is_empty());
+    let preflight_ok = report.log(log);
+    if !preflight_ok {
+        log.log("    Continuo de todas formas; los pasos que dependan de los checks fallidos probablemente tambien fallaran.");
+        log.log("");
+    }
 
     // 1. Multilib antes del -Syu.
     if plan.enable_multilib {
