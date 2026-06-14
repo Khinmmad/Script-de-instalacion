@@ -830,7 +830,7 @@ pub fn execute(plan: &InstallPlan, opts: &InstallOptions, log: &mut Logger) -> V
     //    Solo se ejecuta si el sistema es BTRFS, tiene snapper
     //    instalado y al menos un config. Si falta algo, seguimos sin
     //    snapshot (la mayoria de usuarios no usa BTRFS+snapper).
-    if let Some(steps) = create_snapper_pre_snapshot(log, opts) {
+    if let Some(steps) = btrfs_snapshot(log, opts) {
         results.extend(steps);
     }
 
@@ -1119,10 +1119,7 @@ fn unit_name(name: &str) -> String {
 ///
 /// Es seguro en sistemas no BTRFS: si algo falla en la deteccion,
 /// simplemente devuelve `None` y la instalacion sigue.
-fn create_snapper_pre_snapshot(
-    log: &mut Logger,
-    opts: &InstallOptions,
-) -> Option<Vec<StepResult>> {
+fn btrfs_snapshot(log: &mut Logger, opts: &InstallOptions) -> Option<Vec<StepResult>> {
     // 1. Comprobar que el sistema es BTRFS.
     let fstype = Command::new("findmnt")
         .args(["-n", "-o", "FSTYPE", "/"])
