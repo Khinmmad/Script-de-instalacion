@@ -82,9 +82,10 @@ const MENU_INSTALL: usize = 8;
 const MENU_QUIT: usize = 9;
 
 /// Numero de campos en el formulario de configuracion del sistema.
-const SYS_FIELDS: usize = 6;
+const SYS_FIELDS: usize = 7;
 const SYS_MULTILIB: usize = 4;
 const SYS_REBOOT: usize = 5;
+const SYS_CLEANUP: usize = 6;
 
 struct App {
     mode: Mode,
@@ -122,6 +123,7 @@ struct App {
     sys_hostname: String,
     sys_multilib: bool,
     sys_reboot: bool,
+    sys_cleanup_orphans: bool,
 }
 
 impl App {
@@ -185,6 +187,9 @@ impl App {
         let sys_hostname = sys_state.hostname.clone().unwrap_or_default();
         let sys_multilib = sys_state.multilib_enabled;
         let sys_reboot = false;
+        // Empezamos con la limpieza apagada: es algo destructivo y no
+        // queremos borrar nada sin que el usuario lo haya pedido.
+        let sys_cleanup_orphans = false;
 
         App {
             mode: Mode::Welcome,
@@ -210,6 +215,7 @@ impl App {
             sys_hostname,
             sys_multilib,
             sys_reboot,
+            sys_cleanup_orphans,
         }
     }
 
@@ -271,6 +277,7 @@ impl App {
         plan.hostname = nonempty(&self.sys_hostname).filter(|s| validate::is_valid_hostname(s));
         plan.enable_multilib = self.sys_multilib;
         plan.reboot_after = self.sys_reboot;
+        plan.cleanup_orphans = self.sys_cleanup_orphans;
         plan
     }
 
@@ -286,7 +293,7 @@ impl App {
         let timezone = nonempty(&self.sys_timezone);
         let keymap = nonempty(&self.sys_keymap);
         let hostname = nonempty(&self.sys_hostname);
-        let parts = format_system_settings(
+        let mut parts = format_system_settings(
             locale.as_deref(),
             timezone.as_deref(),
             keymap.as_deref(),
@@ -295,6 +302,9 @@ impl App {
             self.sys_reboot,
             SystemLabelStyle::Short,
         );
+        if self.sys_cleanup_orphans {
+            parts.push("limpiar huerfanos".into());
+        }
         parts.join(", ")
     }
 
@@ -648,6 +658,7 @@ fn handle_system(app: &mut App, code: KeyCode) {
         KeyCode::Char(' ') => match app.sys_cursor {
             SYS_MULTILIB => app.sys_multilib = !app.sys_multilib,
             SYS_REBOOT => app.sys_reboot = !app.sys_reboot,
+            SYS_CLEANUP => app.sys_cleanup_orphans = !app.sys_cleanup_orphans,
             _ => {}
         },
         KeyCode::Enter | KeyCode::Char('i') if app.sys_cursor <= 3 => {
@@ -1032,6 +1043,13 @@ fn draw_system(f: &mut Frame, area: Rect, app: &App) {
         SYS_REBOOT,
         "Reiniciar automaticamente al terminar",
         app.sys_reboot,
+        app.sys_cursor,
+        "",
+    ));
+    lines.push(toggle_line(
+        SYS_CLEANUP,
+        "Limpiar paquetes huerfanos al terminar (pacman -Rns)",
+        app.sys_cleanup_orphans,
         app.sys_cursor,
         "",
     ));

@@ -77,6 +77,10 @@ pub struct InstallPlan {
     pub enable_multilib: bool,
     /// Reiniciar automaticamente al terminar.
     pub reboot_after: bool,
+    /// Limpiar paquetes huerfanos al terminar (`pacman -Rns` sobre los
+    /// que ya no son dependencia de nada). Opcional y desactivado por
+    /// defecto para no borrar nada sin consentimiento.
+    pub cleanup_orphans: bool,
 }
 
 /// Une una lista para mostrarla. Si esta vacia devuelve `(ninguno)` para
@@ -179,6 +183,7 @@ impl InstallPlan {
             hostname: None,
             enable_multilib: false,
             reboot_after: false,
+            cleanup_orphans: false,
         }
     }
 

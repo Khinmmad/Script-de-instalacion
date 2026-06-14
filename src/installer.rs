@@ -771,6 +771,52 @@ pub fn execute(plan: &InstallPlan, opts: &InstallOptions, log: &mut Logger) -> V
         });
     }
 
+    // 10. Limpieza de huerfanos (opt-in). Solo se ejecuta si el usuario
+    //     marco el toggle. Identifica los paquetes que ninguna instalacion
+    //     actual necesita y los borra con sus dependencias.
+    if plan.cleanup_orphans {
+        log.log("==> Limpiando paquetes huerfanos (pacman -Rns)");
+        // Primero listamos los candidatos: pacman -Qtdq devuelve los
+        // huerfanos y los instalados como dependencia. Si no hay ninguno
+        // la salida es vacia y el comando -Rns fallaria, asi que lo
+        // verificamos antes.
+        let orphans = match Command::new("pacman").arg("-Qtdq").output() {
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+            Ok(_) => Vec::new(),
+            Err(e) => {
+                log.log(&format!("  ! no se pudo listar huerfanos: {e}"));
+                Vec::new()
+            }
+        };
+        if orphans.is_empty() {
+            log.log("    No hay paquetes huerfanos. Nada que limpiar.");
+            results.push(StepResult {
+                label: "limpiar huerfanos (sin candidatos)".into(),
+                ok: true,
+            });
+        } else {
+            log.log(&format!("    {} huerfano(s) detectado(s)", orphans.len()));
+            let mut args: Vec<&str> = vec!["pacman", "-Rns", "--noconfirm"];
+            if opts.dry_run {
+                args.push("--print");
+            }
+            // Cada nombre de paquete: ya viene de pacman, no es input del
+            // usuario, asi que se pasa como argumento (no por shell).
+            let pkg_refs: Vec<&str> = orphans.iter().map(String::as_str).collect();
+            args.extend(pkg_refs.iter().copied());
+            let ok = run(log, opts, "sudo", &args);
+            results.push(StepResult {
+                label: format!("limpiar huerfanos ({} paquetes)", orphans.len()),
+                ok,
+            });
+        }
+    }
+
     results
 }
 
