@@ -174,8 +174,23 @@ fn parse_human_size(s: &str) -> Option<u64> {
 }
 
 /// El AUR no expone tamano de descarga/instalacion en su API publica, asi
-/// que los marcamos como desconocidos. La idea es que la UI pueda decir
-/// "N paquetes AUR, tamano desconocido" sin esconder el dato.
+/// que los marcamos como desconocidos. Lo intentamos en su dia:
+///
+/// - El RPC `?type=info` devuelve `DownloadSize`/`InstalledSize` pero
+///   siempre `null`: la API publica solo expone metadatos del PKGBUILD,
+///   no el resultado de un build.
+/// - `HEAD` sobre `URLPath` (el snapshot tarball en cgit) no devuelve
+///   `Content-Length`: cgit genera el archivo on-the-fly desde el git
+///   repo y no sabe el tamano de antemano.
+/// - `GET` con `Range: bytes=0-0` es ignorado por cgit (responde 200
+///   sin `Content-Range`).
+/// - El `package()` del PKGBUILD (que define el install size) solo se
+///   conoce tras compilar: el clon de git del AUR no basta.
+///
+/// La unica forma realista seria clonar el .SRCINFO de cada paquete y
+/// hacer HEAD a cada source URL para sacar el download size. Es mucha
+/// complejidad para un dato parcial (no hay install size). Asi que
+/// "sin tamano" es lo honesto.
 fn estimate_aur(packages: &[String]) -> PackageSizes {
     if packages.is_empty() {
         return PackageSizes::default();
