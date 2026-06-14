@@ -75,6 +75,18 @@ impl Default for Logger {
     }
 }
 
+#[cfg(test)]
+impl Logger {
+    /// Logger que descarta todo (sin archivo, sin escribir a stdout).
+    /// Pensado para tests.
+    fn silent() -> Self {
+        Logger {
+            file: None,
+            path: None,
+        }
+    }
+}
+
 /// Opciones de ejecucion del instalador.
 #[derive(Default)]
 pub struct InstallOptions {
@@ -386,6 +398,36 @@ fn temp_path(prefix: &str) -> String {
     format!("/tmp/arch-postinstall-{prefix}-{}-{n}", std::process::id())
 }
 
+/// Crea una copia de seguridad de `path` (un archivo de sistema, p.ej.
+/// en /etc) en `path.arch-postinstall.bak` antes de que el instalador
+/// lo modifique. Asi, si algo sale mal, el usuario puede restaurar con
+/// `sudo cp path.arch-postinstall.bak path`.
+///
+/// - Si el archivo original no existe (instalacion virgen), no hace nada
+///   y devuelve `true` (no hay nada que respaldar).
+/// - Si el backup ya existe de una corrida anterior, no lo sobreescribe
+///   (idempotente: el backup es siempre la version previa al primer
+///   cambio del instalador).
+/// - En dry-run, simula la copia y devuelve `true`.
+///
+/// Devuelve `true` si el backup esta listo (existente o recien creado).
+pub fn backup_etc_file(log: &mut Logger, opts: &InstallOptions, path: &str) -> bool {
+    let backup = format!("{path}.arch-postinstall.bak");
+    if std::path::Path::new(&backup).exists() {
+        log.log(&format!("  backup ya existe: {backup}"));
+        return true;
+    }
+    if !std::path::Path::new(path).exists() {
+        return true;
+    }
+    if opts.dry_run {
+        log.log(&format!("[dry-run] sudo cp {path} {backup}"));
+        return true;
+    }
+    log.log(&format!("  backup {path} -> {backup}"));
+    run(log, opts, "sudo", &["cp", path, &backup])
+}
+
 /// Escribe `content` en un archivo temporal y lo copia como root a `dst`
 /// con `sudo install -m <mode>`. El contenido nunca pasa por una shell, asi
 /// que es seguro aunque tenga comillas, `$`, espacios o saltos de linea.
@@ -420,8 +462,14 @@ fn sudo_copy_file(
 /// Escribe `content` en un archivo del sistema (vía sudo). Usa un archivo
 /// temporal como intermediario para que el contenido nunca pase por una
 /// shell: asi es seguro aunque contenga comillas, `$`, espacios o saltos de
-/// linea.
+/// linea. Antes de escribir, hace un backup del archivo original en
+/// `<path>.arch-postinstall.bak` (si existe).
 fn write_root_file(log: &mut Logger, opts: &InstallOptions, path: &str, content: &str) -> bool {
+    if !backup_etc_file(log, opts, path) {
+        log.log(&format!(
+            "  ! no se pudo hacer backup de {path}; sigo de todas formas"
+        ));
+    }
     sudo_copy_file(log, opts, content, path, "0644", "write")
 }
 
@@ -430,6 +478,9 @@ fn write_root_file(log: &mut Logger, opts: &InstallOptions, path: &str, content:
 /// sudo, en vez de pasar el `loc` por `sed` (donde una barra o un caracter
 /// especial romperia la expresion).
 fn uncomment_locale_gen(log: &mut Logger, opts: &InstallOptions, loc: &str) -> bool {
+    if !backup_etc_file(log, opts, "/etc/locale.gen") {
+        log.log("  ! no se pudo hacer backup de /etc/locale.gen; sigo de todas formas");
+    }
     if opts.dry_run {
         log.log(&format!("[dry-run] descomentar {loc} en /etc/locale.gen"));
         return true;
@@ -488,6 +539,9 @@ fn uncomment_locale_gen(log: &mut Logger, opts: &InstallOptions, loc: &str) -> b
 /// hostname. Lee el archivo en Rust para hacer la comprobacion y usa un
 /// archivo temporal para que el contenido nunca pase por una shell.
 fn append_to_hosts(log: &mut Logger, opts: &InstallOptions, host: &str, line: &str) -> bool {
+    if !backup_etc_file(log, opts, "/etc/hosts") {
+        log.log("  ! no se pudo hacer backup de /etc/hosts; sigo de todas formas");
+    }
     if opts.dry_run {
         log.log(&format!(
             "[dry-run] anadir '{line}' a /etc/hosts si no existe"
@@ -521,6 +575,9 @@ fn append_to_hosts(log: &mut Logger, opts: &InstallOptions, host: &str, line: &s
 
 /// Activa el repositorio [multilib] descomentando su bloque en pacman.conf.
 fn enable_multilib(log: &mut Logger, opts: &InstallOptions) -> StepResult {
+    if !backup_etc_file(log, opts, "/etc/pacman.conf") {
+        log.log("  ! no se pudo hacer backup de /etc/pacman.conf; sigo de todas formas");
+    }
     // Quita el '#' de las dos lineas del bloque [multilib]. Idempotente: si ya
     // estan descomentadas, no hace nada.
     let sed = r"/\[multilib\]/,/Include/ s/^#//";
@@ -609,6 +666,10 @@ fn configure_boot(
 
     match detect_bootloader() {
         Bootloader::Grub => {
+            // Backup unico antes de la primera modificacion.
+            if !params.is_empty() && !backup_etc_file(log, opts, "/etc/default/grub") {
+                log.log("  ! no se pudo hacer backup de /etc/default/grub; sigo de todas formas");
+            }
             for p in &params {
                 if grub_has(p) {
                     log.log(&format!("  parametro de kernel ya presente: {p}"));
@@ -725,36 +786,41 @@ pub fn execute(plan: &InstallPlan, opts: &InstallOptions, log: &mut Logger) -> V
         ));
         if !ensure_reflector(log, opts) {
             log.log("    ! no se pudo instalar reflector; sigo con mirrors actuales");
-        } else if opts.dry_run {
-            // reflector no tiene --dry-run, asi que simulamos el comando
-            // en el log y seguimos.
-            log.log(&format!(
-                "[dry-run] sudo reflector --country {region} --age 12 \
-                 --protocol https --sort rate --save /etc/pacman.d/mirrorlist"
-            ));
         } else {
-            let ok = run(
-                log,
-                opts,
-                "sudo",
-                &[
-                    "reflector",
-                    "--country",
-                    region,
-                    "--age",
-                    "12",
-                    "--protocol",
-                    "https",
-                    "--sort",
-                    "rate",
-                    "--save",
-                    "/etc/pacman.d/mirrorlist",
-                ],
-            );
-            results.push(StepResult {
-                label: format!("reflector ({region})"),
-                ok,
-            });
+            if !backup_etc_file(log, opts, "/etc/pacman.d/mirrorlist") {
+                log.log("    ! no se pudo hacer backup de mirrorlist; sigo de todas formas");
+            }
+            if opts.dry_run {
+                // reflector no tiene --dry-run, asi que simulamos el comando
+                // en el log y seguimos.
+                log.log(&format!(
+                    "[dry-run] sudo reflector --country {region} --age 12 \
+                 --protocol https --sort rate --save /etc/pacman.d/mirrorlist"
+                ));
+            } else {
+                let ok = run(
+                    log,
+                    opts,
+                    "sudo",
+                    &[
+                        "reflector",
+                        "--country",
+                        region,
+                        "--age",
+                        "12",
+                        "--protocol",
+                        "https",
+                        "--sort",
+                        "rate",
+                        "--save",
+                        "/etc/pacman.d/mirrorlist",
+                    ],
+                );
+                results.push(StepResult {
+                    label: format!("reflector ({region})"),
+                    ok,
+                });
+            }
         }
     }
 
@@ -942,5 +1008,83 @@ pub fn print_summary(results: &[StepResult], log: &mut Logger) {
     }
     if !failed.is_empty() {
         log.log("    Puedes volver a ejecutar el programa: los pasos ya completados se saltaran.");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    /// Crea un directorio temporal unico para tests y devuelve su
+    /// ruta. El caller debe limpiarlo.
+    fn tmp_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "arch-postinstall-test-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn opts_dry() -> InstallOptions {
+        InstallOptions {
+            dry_run: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn backup_skips_when_source_missing() {
+        // Si el archivo original no existe, no hay nada que respaldar
+        // y devolvemos true (sin intentar sudo).
+        let mut log = Logger::silent();
+        let dir = tmp_dir("no-src");
+        let target = dir.join("does-not-exist.conf");
+        let ok = backup_etc_file(&mut log, &opts_dry(), target.to_str().unwrap());
+        assert!(ok);
+        // Tampoco creo un .bak.
+        assert!(!target.with_extension("conf.arch-postinstall.bak").exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn backup_dry_run_logs_intent() {
+        // En dry-run, el backup se simula (no se hace sudo) y devuelve
+        // true. Verificamos que no creo un .bak real.
+        let mut log = Logger::silent();
+        let dir = tmp_dir("dry-run");
+        let target = dir.join("file.conf");
+        fs::write(&target, "contenido original").unwrap();
+        let ok = backup_etc_file(&mut log, &opts_dry(), target.to_str().unwrap());
+        assert!(ok);
+        assert!(!target.with_extension("conf.arch-postinstall.bak").exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn backup_does_not_overwrite_existing() {
+        // Si el .bak ya existe de una corrida anterior, no se sobreescribe.
+        // Aqui lo simulamos creando el .bak a mano; verificamos que
+        // el contenido original del .bak no cambia.
+        let mut log = Logger::silent();
+        let dir = tmp_dir("preexist");
+        let target = dir.join("file.conf");
+        let backup = target.with_extension("conf.arch-postinstall.bak");
+        fs::write(&target, "post-install version").unwrap();
+        fs::write(&backup, "version original").unwrap();
+        // En dry-run, backup_etc_file ni siquiera intenta; el "ya existe"
+        // se detecta antes. Asi que para ejercitar la rama de "ya existe"
+        // necesitamos que el archivo backup exista de antes. Eso ya es asi.
+        let ok = backup_etc_file(&mut log, &opts_dry(), target.to_str().unwrap());
+        assert!(ok);
+        // El .bak conserva el contenido original.
+        assert_eq!(fs::read_to_string(&backup).unwrap(), "version original");
+        fs::remove_dir_all(&dir).ok();
     }
 }
