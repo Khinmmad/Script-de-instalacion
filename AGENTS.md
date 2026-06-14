@@ -34,8 +34,7 @@ bonito".
 - **Binario**: `cargo build --release` produce
   `./target/release/arch-postinstall` (~16-18 s)
 - **Repo remoto**: `https://github.com/Khinmmad/Script-de-instalacion`
-  (el remoto local apunta a una URL con la `s` minuscula que avisa del
-  move; funciona pero se puede actualizar con `git remote set-url`)
+  (el remoto local ya apunta a la URL canonica con `S` mayuscula)
 
 ## Estructura del proyecto
 
