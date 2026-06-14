@@ -216,8 +216,13 @@ fn derive_services(official: &[String], dm: &Option<String>) -> (Vec<String>, Ve
     let has = |name: &str| official.iter().any(|p| p == name);
 
     let mut system = Vec::new();
+    // Un DM vacio no genera un servicio; lo descartamos para no terminar
+    // con `systemctl enable .service` en el log.
     if let Some(dm) = dm {
-        system.push(dm.clone()); // ej. sddm / gdm / lightdm
+        let trimmed = dm.trim();
+        if !trimmed.is_empty() {
+            system.push(trimmed.to_string()); // ej. sddm / gdm / lightdm
+        }
     }
     if has("networkmanager") {
         system.push("NetworkManager".into());
@@ -267,12 +272,22 @@ impl Profile {
     }
 
     pub fn into_plan(self) -> InstallPlan {
-        InstallPlan::new(
-            self.desktop_environment,
-            self.display_manager,
-            self.official_packages,
-            self.aur_packages,
-        )
+        // Un perfil editado a mano puede tener strings vacios donde
+        // esperamos None (ej. `display_manager = ""`). Los normalizamos
+        // para no generar servicios basura tipo `systemctl enable .service`.
+        let de = self.desktop_environment.and_then(nonempty_string);
+        let dm = self.display_manager.and_then(nonempty_string);
+        InstallPlan::new(de, dm, self.official_packages, self.aur_packages)
+    }
+}
+
+/// Devuelve `Some(s.to_string())` solo si `s` no esta vacio tras trim.
+fn nonempty_string(s: String) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
     }
 }
 
@@ -354,6 +369,24 @@ mod tests {
         let plan = InstallPlan::new(None, None, vec!["firefox".into()], vec![]);
         assert!(plan.services.is_empty());
         assert!(plan.user_services.is_empty());
+    }
+
+    #[test]
+    fn profile_with_empty_strings_normalizes_to_none() {
+        // Un perfil editado a mano puede tener `display_manager = ""` o
+        // `desktop_environment = ""`. Esos campos no deben generar
+        // servicios ni base/packages raros.
+        let parsed: Profile = toml::from_str(
+            r#"name = "min"
+desktop_environment = ""
+display_manager = ""
+"#,
+        )
+        .unwrap();
+        let plan = parsed.into_plan();
+        assert!(plan.desktop_env_id.is_none());
+        assert!(plan.display_manager.is_none());
+        assert!(plan.services.is_empty());
     }
 
     #[test]

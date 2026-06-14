@@ -130,7 +130,10 @@ fn yay_present() -> bool {
         .unwrap_or(false)
 }
 
-/// Ejecuta un comando registrandolo. Devuelve true si tuvo exito.
+/// Ejecuta un comando registrandolo. Devuelve true si tuvo exito. En caso
+/// de fallo captura `stderr` y muestra las primeras lineas junto a una
+/// sugerencia contextual segun el programa, para que el usuario sepa que
+/// paso y por donde investigar.
 fn run(log: &mut Logger, opts: &InstallOptions, program: &str, args: &[&str]) -> bool {
     let pretty = format!("{program} {}", args.join(" "));
     if opts.dry_run {
@@ -138,32 +141,114 @@ fn run(log: &mut Logger, opts: &InstallOptions, program: &str, args: &[&str]) ->
         return true;
     }
     log.log(&format!("$ {pretty}"));
-    match Command::new(program).args(args).status() {
-        Ok(status) if status.success() => true,
-        Ok(status) => {
-            log.log(&format!("  ! fallo (codigo {:?}): {pretty}", status.code()));
+    match Command::new(program).args(args).output() {
+        Ok(out) if out.status.success() => true,
+        Ok(out) => {
+            log_command_failure(log, program, &pretty, &out.stderr, out.status.code());
             false
         }
         Err(e) => {
             log.log(&format!("  ! no se pudo ejecutar '{program}': {e}"));
+            log.log(&format!(
+                "      Sugerencia: comprueba que '{program}' este instalado y en el PATH."
+            ));
             false
         }
     }
 }
 
+/// Imprime un fallo de comando con contexto suficiente para depurar.
+/// Extrae hasta 5 lineas no vacias de `stderr` (descartando ruido de
+/// barras de progreso / espacios en blanco) y, si el programa es uno de
+/// los conocidos, anade una sugerencia concreta.
+fn log_command_failure(
+    log: &mut Logger,
+    program: &str,
+    pretty: &str,
+    stderr: &[u8],
+    code: Option<i32>,
+) {
+    let stderr_text = String::from_utf8_lossy(stderr);
+    let preview: Vec<&str> = stderr_text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .take(5)
+        .collect();
+    log.log(&format!("  ! fallo (codigo {code:?}): {pretty}"));
+    for line in &preview {
+        log.log(&format!("      | {line}"));
+    }
+    if let Some(hint) = hint_for_failure(program, &stderr_text) {
+        log.log(&format!("      Sugerencia: {hint}"));
+    }
+}
+
+/// Sugerencia especifica segun que comando fallo. Si `stderr` contiene
+/// pistas reconocibles (paquete no encontrado, base-devel faltante,
+/// sudo pidiendo password) afinamos el mensaje.
+fn hint_for_failure(program: &str, stderr: &str) -> Option<String> {
+    let lower = stderr.to_lowercase();
+    let pkg_not_found = lower.contains("target not found") || lower.contains("package not found");
+    let lock_held =
+        lower.contains("another program holds the lock") || lower.contains("database is locked");
+    let keyring =
+        lower.contains("signature") || lower.contains("keyring") || lower.contains("trust");
+    match program {
+        "sudo" => Some(
+            "comprueba que tu usuario tenga sudo y que la sesion no haya expirado (vuelve a intentarlo)."
+                .into(),
+        ),
+        "pacman" => {
+            if pkg_not_found {
+                Some("el paquete no existe en los repos activos; revisa el nombre, los repos habilitados en /etc/pacman.conf o ejecuta 'pacman -Ss <nombre>'.".into())
+            } else if lock_held {
+                Some("otra instancia de pacman esta corriendo o el lock quedo colgado; ejecuta 'sudo rm /var/lib/pacman/db.lck' si es seguro.".into())
+            } else if keyring {
+                Some("problema con la firma de la base de datos; ejecuta 'sudo pacman-key --refresh-keys' y vuelve a intentar.".into())
+            } else {
+                Some("ejecuta 'sudo pacman -Syu' manualmente; si el problema persiste, revisa /etc/pacman.conf y los mirrors.".into())
+            }
+        }
+        "yay" | "paru" => {
+            if pkg_not_found {
+                Some("el paquete no existe en el AUR; revisa el nombre en https://aur.archlinux.org.".into())
+            } else {
+                Some("los paquetes AUR se compilan localmente; revisa tu toolchain (gcc, make, base-devel) y la salida completa arriba.".into())
+            }
+        }
+        "makepkg" => Some(
+            "fallo la compilacion del paquete; revisa las dependencias de compilacion (makedeps) y la salida completa arriba."
+                .into(),
+        ),
+        "git" => Some("comprueba tu conexion a internet y que 'git' este instalado (ya deberia estarlo tras el setup AUR).".into()),
+        "systemctl" => Some("comprueba que systemd este corriendo y que la unidad exista ('systemctl list-unit-files | grep <nombre>').".into()),
+        "locale-gen" => Some("el locale puede no ser valido; revisa /etc/locale.gen.".into()),
+        "grub-mkconfig" => Some("comprueba que /boot este montado y que GRUB este instalado.".into()),
+        "ln" => Some("el destino puede no existir; revisa la ruta del archivo o enlace simbolico.".into()),
+        _ => None,
+    }
+}
+
 /// Asegura que yay este instalado, compilandolo desde el AUR si hace falta.
+/// Devuelve `true` si yay esta listo para usarse al final.
 fn ensure_yay(log: &mut Logger, opts: &InstallOptions) -> bool {
     if yay_present() {
-        log.log("yay ya esta instalado.");
+        log.log("  ✓ yay ya esta instalado en el sistema.");
         return true;
     }
-    log.log("yay no encontrado: instalando desde el AUR...");
+    log.log("  yay no encontrado: instalando dependencias y compilando desde AUR...");
+    // git + base-devel son las dependencias minimas para clonar y compilar
+    // un paquete del AUR. `base-devel` incluye gcc, make, fakeroot y el
+    // resto de herramientas de build; `git` lo necesita makepkg para
+    // resolver sources.
     let mut conf: Vec<&str> = vec!["pacman", "-S", "--needed"];
     if opts.noconfirm {
         conf.push("--noconfirm");
     }
     conf.extend(["git", "base-devel"]);
     if !run(log, opts, "sudo", &conf) {
+        log.log("  ! fallo la instalacion de git/base-devel; no se puede continuar con AUR.");
         return false;
     }
     let tmp = "/tmp/yay-postinstall";
@@ -174,6 +259,7 @@ fn ensure_yay(log: &mut Logger, opts: &InstallOptions) -> bool {
         "git",
         &["clone", "https://aur.archlinux.org/yay.git", tmp],
     ) {
+        log.log("  ! fallo el clone del repositorio de yay; no se puede continuar con AUR.");
         return false;
     }
     let mut mk: Vec<&str> = vec!["-si"];
@@ -183,15 +269,34 @@ fn ensure_yay(log: &mut Logger, opts: &InstallOptions) -> bool {
     // makepkg debe correr dentro del directorio clonado.
     if opts.dry_run {
         log.log(&format!("[dry-run] (cd {tmp} && makepkg {})", mk.join(" ")));
+        log.log("  ✓ yay quedaria compilado (dry-run).");
         return true;
     }
     log.log(&format!("$ (cd {tmp} && makepkg {})", mk.join(" ")));
-    Command::new("makepkg")
-        .args(&mk)
-        .current_dir(tmp)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    let ok = match Command::new("makepkg").args(&mk).current_dir(tmp).output() {
+        Ok(out) if out.status.success() => true,
+        Ok(out) => {
+            log_command_failure(
+                log,
+                "makepkg",
+                &format!("(cd {tmp} && makepkg {})", mk.join(" ")),
+                &out.stderr,
+                out.status.code(),
+            );
+            false
+        }
+        Err(e) => {
+            log.log(&format!("  ! no se pudo ejecutar 'makepkg': {e}"));
+            log.log("      Sugerencia: makepkg viene con 'pacman' (paquete pacman); revisa que no estes corriendo como root.");
+            false
+        }
+    };
+    if ok {
+        log.log("  ✓ yay compilado e instalado.");
+    } else {
+        log.log("  ! makepkg fallo al compilar yay.");
+    }
+    ok
 }
 
 /// Instala un solo paquete con el gestor indicado. Devuelve StepResult.
@@ -540,15 +645,36 @@ fn configure_boot(
 }
 
 /// Ejecuta el plan completo y devuelve los resultados de cada paso.
+///
+/// Orden de operaciones (importante: AUR **antes** que los oficiales, para
+/// que `git`, `base-devel` y `yay` esten listos antes de cualquier
+/// instalacion):
+///
+/// 1. Habilitar `[multilib]` (si se pidio) — antes del `-Syu` para que
+///    pacman vea los paquetes de multilib al sincronizar.
+/// 2. `pacman -Syu` — sincronizar DB y actualizar el sistema base.
+/// 3. Preparar AUR (solo si hay paquetes AUR): instalar `git` y
+///    `base-devel` si faltan, clonar y compilar `yay` si no esta.
+/// 4. Instalar paquetes AUR con `yay`.
+/// 5. Instalar paquetes oficiales con `pacman`.
+/// 6. Configurar basicos del sistema (locale, zona, teclado, hostname).
+/// 7. Cablear microcódigo / NVIDIA al bootloader.
+/// 8. Habilitar servicios de sistema (`systemctl enable`).
+/// 9. Habilitar servicios de usuario (audio PipeWire).
+///
+/// Un paso que falla NO aborta el resto: queda registrado en `results`
+/// con `ok: false` y seguimos con el siguiente.
 pub fn execute(plan: &InstallPlan, opts: &InstallOptions, log: &mut Logger) -> Vec<StepResult> {
     let mut results = Vec::new();
 
-    // Multilib debe activarse antes del -Syu para que pacman vea esos paquetes.
+    // 1. Multilib antes del -Syu.
     if plan.enable_multilib {
         log.log("==> Habilitando el repositorio [multilib]");
         results.push(enable_multilib(log, opts));
     }
 
+    // 2. Sync. Si falla seguimos, pero los pasos posteriores pueden fallar
+    //    tambien; el resumen final lo reflejara.
     log.log("==> Sincronizando bases de datos y sistema (pacman -Syu)");
     let mut syu = vec!["pacman", "-Syu"];
     if opts.noconfirm {
@@ -560,16 +686,21 @@ pub fn execute(plan: &InstallPlan, opts: &InstallOptions, log: &mut Logger) -> V
         ok: synced,
     });
 
-    if !plan.official.is_empty() {
-        log.log("==> Instalando paquetes oficiales (uno por uno para robustez)");
-        for pkg in &plan.official {
-            results.push(install_one(log, opts, "pacman", pkg));
-        }
-    }
+    // 3. Setup AUR ANTES de instalar cualquier paquete: si un paquete
+    //    oficial tiene un wrapper o build-step que use git/yay, ya
+    //    estara disponible, y los AUR iran inmediatamente despues.
+    let aur_ready = if !plan.aur.is_empty() {
+        log.log("==> Preparando herramientas para AUR (git, base-devel, yay)");
+        ensure_yay(log, opts)
+    } else {
+        log.log("==> Sin paquetes AUR en el plan; se omite la preparacion de yay.");
+        true
+    };
 
+    // 4. Paquetes AUR primero.
     if !plan.aur.is_empty() {
-        log.log("==> Preparando AUR");
-        if ensure_yay(log, opts) {
+        if aur_ready {
+            log.log("==> Instalando paquetes AUR (uno por uno para robustez)");
             for pkg in &plan.aur {
                 results.push(install_one(log, opts, "yay", pkg));
             }
@@ -584,17 +715,32 @@ pub fn execute(plan: &InstallPlan, opts: &InstallOptions, log: &mut Logger) -> V
         }
     }
 
-    // Basicos del sistema (locale, zona horaria, teclado, hostname).
+    // 5. Paquetes oficiales.
+    if !plan.official.is_empty() {
+        log.log("==> Instalando paquetes oficiales (uno por uno para robustez)");
+        for pkg in &plan.official {
+            results.push(install_one(log, opts, "pacman", pkg));
+        }
+    }
+
+    // 6. Basicos del sistema (locale, zona horaria, teclado, hostname).
     configure_system_basics(plan, log, opts, &mut results);
 
-    // Drivers que requieren tocar el arranque: microcodigo de CPU y NVIDIA.
+    // 7. Drivers que requieren tocar el arranque: microcodigo de CPU y NVIDIA.
     configure_boot(plan, log, opts, &mut results);
 
-    // Servicios de sistema: display manager (sddm/gdm/lightdm), NetworkManager,
-    // bluetooth... Esto deja el equipo listo para arrancar al escritorio.
-    if !plan.services.is_empty() {
+    // 8. Servicios de sistema: display manager (sddm/gdm/lightdm),
+    //    NetworkManager, bluetooth... Esto deja el equipo listo para
+    //    arrancar al escritorio. Filtramos vacios por si un perfil mal
+    //    escrito contiene un nombre de servicio en blanco.
+    let system_services: Vec<&String> = plan
+        .services
+        .iter()
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    if !system_services.is_empty() {
         log.log("==> Habilitando servicios de sistema (systemctl enable)");
-        for svc in &plan.services {
+        for svc in system_services {
             let unit = unit_name(svc);
             let ok = run(log, opts, "sudo", &["systemctl", "enable", &unit]);
             results.push(StepResult {
@@ -604,12 +750,18 @@ pub fn execute(plan: &InstallPlan, opts: &InstallOptions, log: &mut Logger) -> V
         }
     }
 
-    // Servicios de usuario: stack de audio PipeWire. Se habilitan para el
-    // usuario actual (sin sudo); puede no haber sesion de usuario durante una
-    // post-instalacion, en cuyo caso falla sin abortar el resto.
-    if !plan.user_services.is_empty() {
+    // 9. Servicios de usuario: stack de audio PipeWire. Se habilitan para
+    //    el usuario actual (sin sudo); puede no haber sesion de usuario
+    //    durante una post-instalacion, en cuyo caso falla sin abortar el
+    //    resto.
+    let user_services: Vec<&String> = plan
+        .user_services
+        .iter()
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    if !user_services.is_empty() {
         log.log("==> Habilitando audio para el usuario (systemctl --user enable)");
-        let units: Vec<String> = plan.user_services.iter().map(|s| unit_name(s)).collect();
+        let units: Vec<String> = user_services.iter().map(|s| unit_name(s)).collect();
         let mut args: Vec<&str> = vec!["--user", "enable"];
         args.extend(units.iter().map(|s| s.as_str()));
         let ok = run(log, opts, "systemctl", &args);
@@ -631,7 +783,8 @@ fn unit_name(name: &str) -> String {
     }
 }
 
-/// Imprime un resumen final legible.
+/// Imprime un resumen final legible. Si hubo fallos los lista uno por uno
+/// y, al final, recuerda donde esta el log completo.
 pub fn print_summary(results: &[StepResult], log: &mut Logger) {
     let ok = results.iter().filter(|r| r.ok).count();
     let failed: Vec<&StepResult> = results.iter().filter(|r| !r.ok).collect();
@@ -643,12 +796,20 @@ pub fn print_summary(results: &[StepResult], log: &mut Logger) {
     if failed.is_empty() {
         log.log("    Todo se instalo correctamente.");
     } else {
-        log.log(&format!("    {} pasos fallaron:", failed.len()));
-        for f in failed {
+        log.log(&format!("    {} paso(s) fallaron:", failed.len()));
+        for f in &failed {
             log.log(&format!("      - {}", f.label));
         }
+        log.log("    Cada fallo se registro en el log con su 'stderr' y una sugerencia.");
     }
     if let Some(path) = log.path.clone() {
         log.log(&format!("    Log completo: {}", path.display()));
+    } else {
+        log.log(
+            "    (No se pudo crear el archivo de log; revisa los permisos de ~/.local/state/.)",
+        );
+    }
+    if !failed.is_empty() {
+        log.log("    Puedes volver a ejecutar el programa: los pasos ya completados se saltaran.");
     }
 }

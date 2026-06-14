@@ -222,9 +222,13 @@ fn run_plan(plan: InstallPlan, cli: &Cli, already_confirmed: bool) -> Result<()>
 fn main() -> ExitCode {
     // Si la app entra en panico con la TUI activa, restaura la terminal
     // antes de imprimir el error; si no, la consola queda inutilizable.
+    // Ademas dejamos un mensaje claro para que el usuario sepa que hacer.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         ratatui::restore();
+        eprintln!("\n[!] La aplicacion se cerro por un error inesperado.");
+        eprintln!("    Por favor abre un issue con el mensaje siguiente:");
+        eprintln!();
         default_hook(info);
     }));
 
